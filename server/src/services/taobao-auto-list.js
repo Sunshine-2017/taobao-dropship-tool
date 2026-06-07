@@ -302,24 +302,57 @@ async function fillForm(page, title, price, desc) {
     }
 
     // Fallback: scan again after expand for price/stock
+    // Fallback: deep search by label text — find "一口价" / "总库存" labels and the input near them
     if (!filled.price || !filled.qty) {
-      const allAfter = page.locator('input:visible');
-      const c2 = await allAfter.count();
-      for (let i = 0; i < c2; i++) {
-        const el = allAfter.nth(i);
-        const ph = (await el.getAttribute('placeholder').catch(() => '')) || '';
-        const parentText = await el.locator('..').innerText().catch(() => '');
-        if (!filled.price && (parentText.includes('一口价') || parentText.includes('价格') || ph.includes('元'))) {
-          await el.click(); await el.fill(String(price));
-          console.log(`[Taobao] ✓ Price (rescan): ${price}`);
-          filled.price = true;
+      const deepResult = await page.evaluate(({ price }) => {
+        const result = { price: false, qty: false };
+
+        function findInputNearLabel(labelText) {
+          const all = document.querySelectorAll('*');
+          for (const el of all) {
+            if (el.textContent && el.textContent.trim() === labelText && el.textContent.length === labelText.length) {
+              // Found the label — find the nearest input in its parent chain
+              let container = el.parentElement;
+              for (let d = 0; d < 5 && container; d++) {
+                const inputs = container.querySelectorAll('input:not([type="hidden"]), textarea');
+                for (const inp of inputs) {
+                  const r = inp.getBoundingClientRect();
+                  if (r.width > 30 && r.height > 10) return inp;
+                }
+                container = container.parentElement;
+              }
+            }
+          }
+          return null;
         }
-        if (!filled.qty && (parentText.includes('总库存') || parentText.includes('库存'))) {
-          await el.click(); await el.fill('9999');
-          console.log(`[Taobao] ✓ Stock (rescan): 9999`);
-          filled.qty = true;
+
+        // Price: find "一口价" label
+        if (!result.price) {
+          const inp = findInputNearLabel('一口价');
+          if (inp) {
+            inp.focus(); inp.value = String(price);
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            result.price = true;
+          }
         }
-      }
+
+        // Stock: find "总库存" label
+        if (!result.qty) {
+          const inp = findInputNearLabel('总库存');
+          if (inp) {
+            inp.focus(); inp.value = '9999';
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            result.qty = true;
+          }
+        }
+
+        return result;
+      }, { price });
+
+      if (deepResult.price) { filled.price = true; console.log('[Taobao] ✓ Price (label search)'); }
+      if (deepResult.qty) { filled.qty = true; console.log('[Taobao] ✓ Stock (label search)'); }
     }
   } catch (e) {
     console.log('[Taobao] Fill error:', e.message);
