@@ -1,0 +1,11 @@
+node_modules/
+data/
+*.png
+*.json
+screenshots/
+logs/
+browser-profile/
+taobao-profile/
+tmp-profile/
+test-browser/
+.env

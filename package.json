@@ -1,0 +1,15 @@
+{
+  "name": "taobao-dropship-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "淘宝无货源自动上架工具",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && node src/index.js",
+    "dev:client": "cd client && npx vite --host",
+    "install:all": "cd server && npm install && cd ../client && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
