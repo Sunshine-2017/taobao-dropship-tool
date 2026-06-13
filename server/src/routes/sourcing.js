@@ -26,6 +26,7 @@ router.post('/search', async (req, res) => {
       keyword: result.keyword,
       products: result.products,
       totalResults: result.totalResults,
+      source: result.source || 'real', // 'real', 'mock', 'cache'
     });
   } catch (err) {
     console.error('[搜索] 搜索失败:', err.message);

@@ -4,11 +4,14 @@
 
 一个基于 Playwright 浏览器自动化的淘宝无货源上架工具，支持从 1688 选品、自动填写商品信息、CSV 批量导出。
 
+**新增功能**: 支持 [Computer-Use 模式](#方式三computer-use-自动上架) - 使用截图+坐标点击，更稳定！
+
 ## 📋 项目概述
 
 ### 核心功能
 - **1688 选品搜索** — 从 1688 批发平台搜索商品
 - **自动上架** — Playwright 自动化填写淘宝商品发布表单
+- **Computer-Use 上架** — 截图+坐标点击方式，更稳定（新）
 - **CSV 批量导出** — 生成淘宝兼容的 CSV 文件
 - **商品管理** — 本地商品库管理（增删改查）
 - **定价策略** — 自动计算售价（成本 × 倍率 + 固定加价）
@@ -19,6 +22,7 @@
 | **前端** | React + Vite | SPA 应用，Ant Design UI |
 | **后端** | Node.js + Express | REST API 服务 |
 | **自动化** | Playwright | 浏览器自动化（Chromium） |
+| **Computer-Use** | 截图+坐标 | 更稳定的自动化方式 |
 | **数据库** | JSON 文件 | 轻量级本地存储 |
 | **浏览器** | Chromium | 淘宝登录态复用 |
 
@@ -133,6 +137,36 @@ npm run dev:client  # 前端 http://localhost:5173
 2. **导出 CSV** — 在「上架管理」选择商品，点击「导出CSV」
 3. **下载 CSV** — 下载生成的 CSV 文件
 4. **导入淘宝** — 在淘宝卖家中心使用批量导入功能
+
+### 方式三：Computer-Use 自动上架
+
+> 🆕 **新功能**: 使用截图+坐标点击方式，比 DOM 操作更稳定！
+
+**优势**:
+- ✅ 不依赖页面 DOM 结构
+- ✅ 更稳定，不易因页面更新而失效
+- ✅ 支持图片上传
+- ✅ 更接近真实用户操作
+
+**使用步骤**:
+
+```bash
+# 1. 首次使用：校准坐标（只需一次）
+npm run calibrate
+
+# 2. 快速校准（使用估计值）
+npm run calibrate:quick
+
+# 3. 测试自动上架（干运行）
+npm run test:computer-use
+
+# 4. 实际上架（通过 API）
+curl -X POST http://localhost:3001/api/listings/auto-list-computer-use \
+  -H "Content-Type: application/json" \
+  -d '{"productIds": [1], "dryRun": false}'
+```
+
+**详细说明**: 参见 [COMPUTER-USE-GUIDE.md](./COMPUTER-USE-GUIDE.md)
 
 ---
 

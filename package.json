@@ -7,7 +7,10 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "cd server && node src/index.js",
     "dev:client": "cd client && npx vite --host",
-    "install:all": "cd server && npm install && cd ../client && npm install"
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "calibrate": "cd server && node calibrate-coordinates.js",
+    "calibrate:quick": "cd server && node calibrate-coordinates.js quick",
+    "test:computer-use": "cd server && node -e \"import('./src/services/taobao-computer-use.js').then(m => m.testComputerUse())\""
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

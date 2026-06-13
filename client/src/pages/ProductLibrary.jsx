@@ -3,7 +3,7 @@ import {
   Table, Button, Space, Tag, Input, Modal, Form, InputNumber, Select,
   message, Popconfirm, Row, Col, Card, Statistic,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, EditOutlined, DollarOutlined, ExportOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, EditOutlined, DollarOutlined, ExportOutlined, TagsOutlined } from '@ant-design/icons';
 import { getProducts, createProduct, updateProduct, deleteProduct, batchUpdatePrice, generateCSV, getSettings } from '../api';
 
 export default function ProductLibrary() {
@@ -16,6 +16,7 @@ export default function ProductLibrary() {
   const [selectedRows, setSelectedRows] = useState([]);
   const [editModal, setEditModal] = useState(null);
   const [batchPriceModal, setBatchPriceModal] = useState(false);
+  const [batchCategoryModal, setBatchCategoryModal] = useState(false);
   const [settings, setSettings] = useState({});
   const [form] = Form.useForm();
 
@@ -35,14 +36,19 @@ export default function ProductLibrary() {
 
   const handleEdit = (record) => {
     setEditModal(record);
+    const images = (() => { try { return JSON.parse(record.images || '[]'); } catch { return []; } })();
     form.setFieldsValue({
       ...record,
-      images: (() => { try { return JSON.parse(record.images || '[]'); } catch { return []; } })(),
+      images: Array.isArray(images) ? images.join('\n') : '',
     });
   };
 
   const handleSave = async () => {
     const values = await form.validateFields();
+    // Convert images from newline-separated text to JSON array
+    if (values.images && typeof values.images === 'string') {
+      values.images = values.images.split('\n').map(s => s.trim()).filter(Boolean);
+    }
     if (editModal.id) {
       await updateProduct(editModal.id, values);
       message.success('已更新');
@@ -68,6 +74,30 @@ export default function ProductLibrary() {
     });
     message.success(`已批量改价 ${selectedRows.length} 个商品`);
     setBatchPriceModal(false);
+    setSelectedRows([]);
+    fetchData();
+  };
+
+  const handleBatchDelete = async () => {
+    const ids = selectedRows.map(r => r.id);
+    let success = 0;
+    for (const id of ids) {
+      try { await deleteProduct(id); success++; } catch {}
+    }
+    message.success(`已删除 ${success} 个商品`);
+    setSelectedRows([]);
+    fetchData();
+  };
+
+  const handleBatchCategory = async () => {
+    const category = form.getFieldValue('batch_category');
+    if (!category) return message.warning('请输入类目');
+    let success = 0;
+    for (const row of selectedRows) {
+      try { await updateProduct(row.id, { category }); success++; } catch {}
+    }
+    message.success(`已更新 ${success} 个商品的类目`);
+    setBatchCategoryModal(false);
     setSelectedRows([]);
     fetchData();
   };
@@ -162,6 +192,13 @@ export default function ProductLibrary() {
                   setBatchPriceModal(true);
                   form.resetFields();
                 }}>批量改价</Button>
+                <Button icon={<TagsOutlined />} onClick={() => {
+                  setBatchCategoryModal(true);
+                  form.resetFields();
+                }}>批量改类目</Button>
+                <Popconfirm title={`确认删除 ${selectedRows.length} 个商品？`} onConfirm={handleBatchDelete}>
+                  <Button danger icon={<DeleteOutlined />}>批量删除</Button>
+                </Popconfirm>
                 <Button type="primary" icon={<ExportOutlined />} onClick={handleGenerateCSV}>生成CSV上架</Button>
               </>
             )}
@@ -198,32 +235,37 @@ export default function ProductLibrary() {
         open={!!editModal}
         onOk={handleSave}
         onCancel={() => setEditModal(null)}
-        width={640}
+        width={680}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="title" label="商品标题" rules={[{ required: true }]}>
             <Input placeholder="淘宝商品标题（建议30字以上含关键词）" />
           </Form.Item>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item name="cost_price" label="成本价（元）" rules={[{ required: true }]}>
                 <InputNumber min={0} step={0.01} style={{ width: '100%' }} placeholder="拿货成本" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item name="selling_price" label="售价（元）">
-                <InputNumber min={0} step={0.01} style={{ width: '100%' }} placeholder="自动计算，可手动修改" />
+                <InputNumber min={0} step={0.01} style={{ width: '100%' }} placeholder="自动计算" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="category" label="淘宝类目">
+                <Input placeholder={settings.default_category || '类目'} />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item name="category" label="淘宝类目">
-            <Input placeholder={settings.default_category || '中药材/中药饮片'} />
-          </Form.Item>
           <Form.Item name="tags" label="标签">
             <Input placeholder="如：养生、泡茶、煲汤" />
           </Form.Item>
           <Form.Item name="description" label="商品描述">
-            <Input.TextArea rows={4} placeholder="商品详情描述，支持换行" />
+            <Input.TextArea rows={3} placeholder="商品详情描述" />
+          </Form.Item>
+          <Form.Item name="images" label="商品图片URL" help="每行一个图片链接，用于CSV导出">
+            <Input.TextArea rows={3} placeholder={"https://img.example.com/1.jpg\nhttps://img.example.com/2.jpg"} />
           </Form.Item>
         </Form>
       </Modal>
@@ -249,6 +291,21 @@ export default function ProductLibrary() {
               </Form.Item>
             </Col>
           </Row>
+        </Form>
+      </Modal>
+
+      {/* Batch Category Modal */}
+      <Modal
+        title="批量修改类目"
+        open={batchCategoryModal}
+        onOk={handleBatchCategory}
+        onCancel={() => setBatchCategoryModal(false)}
+      >
+        <p>将为选中的 {selectedRows.length} 个商品设置统一类目</p>
+        <Form form={form} layout="vertical">
+          <Form.Item name="batch_category" label="淘宝类目" rules={[{ required: true }]}>
+            <Input placeholder={settings.default_category || '中药材/中药饮片'} />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

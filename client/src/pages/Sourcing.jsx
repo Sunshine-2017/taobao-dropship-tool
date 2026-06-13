@@ -2,7 +2,7 @@
 import { useNavigate } from 'react-router-dom';
 import {
   Card, Input, Button, Select, Form, InputNumber, message, Space, Row, Col,
-  Tag, Tabs, Typography, List, Divider, Checkbox, Spin, Empty, Image, Badge,
+  Tag, Tabs, Typography, List, Divider, Checkbox, Spin, Empty, Image, Badge, Alert,
 } from 'antd';
 import {
   LinkOutlined, PlusOutlined, InboxOutlined, ThunderboltOutlined,
@@ -48,6 +48,7 @@ export default function Sourcing() {
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [confirming, setConfirming] = useState(false);
   const [searchErr, setSearchErr] = useState('');
+  const [searchSource, setSearchSource] = useState(''); // 'real', 'mock', 'cache'
 
   // --- Search 1688 ---
   const handleSearch = async () => {
@@ -57,10 +58,12 @@ export default function Sourcing() {
     setSearchErr('');
     setSearchResults([]);
     setSelectedProducts([]);
+    setSearchSource('');
     try {
       const { data } = await searchSource({ keyword: kw, limit: 20 });
       if (data.ok && data.products.length > 0) {
         setSearchResults(data.products);
+        setSearchSource(data.source || 'real');
         message.success(`找到 ${data.products.length} 个商品`);
       } else if (data.blocked) {
         setSearchErr(data.message || '1688需要验证，请稍后重试');
@@ -290,6 +293,16 @@ export default function Sourcing() {
         {/* Results */}
         {!searching && searchResults.length > 0 && (
           <div>
+            {/* Search source indicator */}
+            {searchSource === 'mock' && (
+              <Alert
+                message="当前为离线商品数据（仅供参考），实际搜索可能被1688限制"
+                type="warning"
+                showIcon
+                closable
+                style={{ marginBottom: 12 }}
+              />
+            )}
             {/* Selection bar */}
             <div
               style={{

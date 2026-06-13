@@ -5,7 +5,7 @@ import {
   DownloadOutlined, CheckCircleOutlined, EyeOutlined, DeleteOutlined,
   RocketOutlined, ImportOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
-import { getListings, getProducts, generateCSV, autoListTaobao, updateListing, deleteListing, deleteProduct } from '../api';
+import { getListings, getProducts, generateCSV, autoListTaobao, getAutoListStatus, updateListing, deleteListing, deleteProduct } from '../api';
 
 export default function ListingManager() {
   const navigate = useNavigate();
@@ -17,15 +17,18 @@ export default function ListingManager() {
   const [autoListing, setAutoListing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [csvResult, setCsvResult] = useState(null);
+  const [autoListStatus, setAutoListStatus] = useState(null);
 
   const fetchData = () => {
     setLoading(true);
     Promise.all([
       getListings({ pageSize: 100 }),
       getProducts({ pageSize: 200 }),
-    ]).then(([lRes, pRes]) => {
+      getAutoListStatus().catch(() => ({ data: {} })),
+    ]).then(([lRes, pRes, sRes]) => {
       setListings(lRes.data.items || []);
       setAllProducts(pRes.data.items || []);
+      setAutoListStatus(sRes.data || {});
     }).finally(() => setLoading(false));
   };
 
@@ -35,29 +38,55 @@ export default function ListingManager() {
 
   // === Auto-list to Taobao (browser automation) ===
   const handleAutoList = async (productIds) => {
-    setAutoListing(true);
-    try {
-      const { data } = await autoListTaobao({ productIds });
-      setSelectedRowKeys([]);
+    Modal.confirm({
+      title: '确认自动上架',
+      icon: <RocketOutlined />,
+      content: (
+        <div>
+          <p>即将为 <strong>{productIds.length}</strong> 件商品自动上架到淘宝</p>
+          <p style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
+            系统将自动打开浏览器，请确保：
+          </p>
+          <ul style={{ color: '#999', fontSize: 12, paddingLeft: 20 }}>
+            <li>已安装 Chrome 浏览器</li>
+            <li>准备好在浏览器中登录淘宝（如需要扫码）</li>
+            <li>图片需要在浏览器中手动上传</li>
+          </ul>
+        </div>
+      ),
+      okText: '开始上架',
+      cancelText: '取消',
+      onOk: async () => {
+        setAutoListing(true);
+        try {
+          const { data } = await autoListTaobao({ productIds });
+          setSelectedRowKeys([]);
 
-      // Show detailed results
-      const results = data.results || [];
-      const successCount = results.filter(r => r.success).length;
-      const failCount = results.filter(r => !r.success).length;
+          const results = data.results || [];
+          const successCount = results.filter(r => r.success).length;
+          const failCount = results.filter(r => !r.success).length;
 
-      if (successCount > 0 && failCount === 0) {
-        message.success(`全部 ${successCount} 件商品上架成功！`);
-      } else if (successCount > 0) {
-        message.warning(`${successCount} 件成功，${failCount} 件失败。请查看控制台日志。`);
-      } else {
-        message.error(`全部 ${failCount} 件商品上架失败：${results[0]?.message || '未知错误'}`);
-      }
+          if (successCount > 0 && failCount === 0) {
+            message.success(`全部 ${successCount} 件商品上架成功！`);
+          } else if (successCount > 0) {
+            Modal.warning({
+              title: '部分上架成功',
+              content: `${successCount} 件成功，${failCount} 件失败。失败原因：${results.filter(r => !r.success).map(r => r.message).slice(0, 3).join('；')}`,
+            });
+          } else {
+            Modal.error({
+              title: '上架失败',
+              content: results[0]?.message || '未知错误，请检查浏览器状态',
+            });
+          }
 
-      fetchData();
-    } catch (err) {
-      message.error('启动失败: ' + (err.response?.data?.message || err.message));
-    }
-    setAutoListing(false);
+          fetchData();
+        } catch (err) {
+          message.error('启动失败: ' + (err.response?.data?.message || err.message));
+        }
+        setAutoListing(false);
+      },
+    });
   };
 
   // === CSV flow ===
@@ -67,7 +96,10 @@ export default function ListingManager() {
     }
     setGenerating(true);
     try {
-      const { data } = await generateCSV({ productIds: selectedRowKeys });
+      // Derive keyword from selected products' tags or category
+      const selectedProds = allProducts.filter(p => selectedRowKeys.includes(p.id));
+      const keyword = selectedProds[0]?.tags || selectedProds[0]?.category || '';
+      const { data } = await generateCSV({ productIds: selectedRowKeys, keyword });
       setCsvResult({ fileName: data.fileName, csvPath: data.csvPath, count: data.count });
       setSelectedRowKeys([]);
       fetchData();
@@ -181,9 +213,9 @@ export default function ListingManager() {
         <Col span={12}>
           <Card size="small">
             <Space wrap>
-              <Button icon={<ImportOutlined />} onClick={() => navigate('/sourcing')}>导入商品</Button>
+              <Button type="primary" icon={<ImportOutlined />} onClick={() => navigate('/sourcing')}>搜索选品</Button>
               <Button icon={<DownloadOutlined />} onClick={handleGenerateCSV} loading={generating} disabled={selectedRowKeys.length === 0}>
-                {selectedRowKeys.length > 0 ? `导出CSV (${selectedRowKeys.length})` : '导出CSV'}
+                {selectedRowKeys.length > 0 ? `导出CSV备份 (${selectedRowKeys.length})` : '导出CSV备份'}
               </Button>
             </Space>
           </Card>
@@ -191,7 +223,14 @@ export default function ListingManager() {
       </Row>
 
       <Alert
-        message="推荐使用「一键上架」：点击后自动打开浏览器，在浏览器中登录淘宝即可自动填写商品信息"
+        message="推荐工作流：搜索选品 → 导入商品库 → 一键上架（自动填写淘宝发布页）"
+        description={
+          <span>
+            点击「一键上架」会自动打开浏览器，登录淘宝后自动填写商品信息。
+            图片需要在浏览器中手动上传，其他信息自动完成。
+            {autoListStatus?.hasProfile && <Tag color="green" style={{ marginLeft: 8 }}>浏览器Profile已存在</Tag>}
+          </span>
+        }
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
@@ -250,21 +289,24 @@ export default function ListingManager() {
       </Modal>
 
       {/* CSV result modal */}
-      <Modal title={null} open={!!csvResult} onCancel={() => setCsvResult(null)} footer={null} width={520} closable={false} maskClosable>
+      <Modal title={null} open={!!csvResult} onCancel={() => setCsvResult(null)} footer={null} width={560} closable={false} maskClosable>
         {csvResult && (
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <CheckCircleOutlined style={{ fontSize: 48, color: '#52c41a', marginBottom: 12 }} />
             <h2 style={{ margin: '8px 0' }}>CSV 已生成</h2>
-            <p style={{ color: '#666' }}>{csvResult.count} 个商品</p>
-            <Tag style={{ fontSize: 13, padding: '4px 12px', marginBottom: 16 }}>{csvResult.fileName}</Tag>
-            <Button type="primary" size="large" icon={<DownloadOutlined />} onClick={handleDownloadCSV} block>下载 CSV 文件</Button>
-            <Card size="small" style={{ textAlign: 'left', marginTop: 16, background: '#fafafa' }}>
-              <h4>下载后导入淘宝：</h4>
-              <ol style={{ paddingLeft: 20, marginBottom: 0, lineHeight: 2.2 }}>
-                <li>打开<strong>千牛卖家中心</strong> → 宝贝管理 → 发布宝贝</li>
-                <li>选择<strong>批量发布</strong> → 导入CSV文件</li>
-                <li>核对商品信息后提交上架</li>
-              </ol>
+            <p style={{ color: '#666' }}>{csvResult.count} 个商品 · {csvResult.fileName}</p>
+            <Button type="primary" size="large" icon={<DownloadOutlined />} onClick={handleDownloadCSV} block style={{ marginTop: 12, marginBottom: 16 }}>
+              下载 CSV 文件
+            </Button>
+            <Card size="small" style={{ textAlign: 'left', background: '#fffbe6', border: '1px solid #ffe58f' }}>
+              <h4 style={{ margin: '0 0 8px', color: '#d48806' }}>💡 CSV说明</h4>
+              <p style={{ fontSize: 13, marginBottom: 8 }}>
+                CSV文件包含了商品的标题、价格、类目等信息。由于淘宝目前没有直接的CSV导入入口，
+                建议使用<strong>「一键上架」</strong>功能直接在浏览器中自动填写。
+              </p>
+              <p style={{ fontSize: 12, color: '#999', marginBottom: 0 }}>
+                CSV文件可作为商品信息备份，或在第三方上架工具中使用。
+              </p>
             </Card>
           </div>
         )}

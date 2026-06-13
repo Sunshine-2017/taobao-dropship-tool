@@ -1,5 +1,6 @@
 ﻿import { Router } from 'express';
 import { join } from 'path';
+import { existsSync } from 'fs';
 import { paginate, findById, insert, update, remove } from '../db.js';
 import { generateTaobaoCSV } from '../services/taobao-csv.js';
 import { batchListToTaobao } from '../services/taobao-auto-list.js';
@@ -21,7 +22,7 @@ router.get('/', (req, res) => {
 
 // Generate CSV for selected products
 router.post('/generate-csv', (req, res) => {
-  const { productIds } = req.body;
+  const { productIds, keyword } = req.body;
   if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
     return res.status(400).json({ error: '请选择要上架的商品' });
   }
@@ -34,7 +35,7 @@ router.post('/generate-csv', (req, res) => {
 
   if (products.length === 0) return res.status(400).json({ error: '未找到有效商品' });
 
-  const csvPath = generateTaobaoCSV(products);
+  const csvPath = generateTaobaoCSV(products, keyword);
 
   // Record listing entries
   const listings = [];
@@ -100,6 +101,19 @@ router.delete('/:id', (req, res) => {
 
   const ok = remove('listings', id);
   res.json({ ok });
+});
+
+// Health check for auto-list readiness
+router.get('/auto-list-status', async (req, res) => {
+  const profileDir = join(process.cwd(), 'data', 'taobao-profile');
+  const hasProfile = existsSync(profileDir);
+  const screenshots = existsSync(join(process.cwd(), 'data', 'screenshots'));
+  res.json({
+    ok: true,
+    hasProfile,
+    hasScreenshots: screenshots,
+    message: hasProfile ? '浏览器Profile已存在（可能已登录）' : '首次使用需要登录淘宝',
+  });
 });
 
 // Auto-list products directly to Taobao via browser automation

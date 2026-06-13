@@ -5,13 +5,14 @@ const EXPORTS_DIR = join(process.cwd(), 'data', 'exports');
 
 // Generate Taobao Assistant compatible CSV
 // Format reference: https://open.taobao.com/docV3
-export function generateTaobaoCSV(products) {
+export function generateTaobaoCSV(products, keyword = '') {
   if (!existsSync(EXPORTS_DIR)) {
     mkdirSync(EXPORTS_DIR, { recursive: true });
   }
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const fileName = `taobao-listings-${timestamp}.csv`;
+  const prefix = keyword ? keyword.replace(/[/\\:*?"<>|]/g, '').slice(0, 20) : 'taobao-listings';
+  const fileName = `${prefix}-${timestamp}.csv`;
   const filePath = join(EXPORTS_DIR, fileName);
 
   // Taobao Assistant CSV columns (standard format)
