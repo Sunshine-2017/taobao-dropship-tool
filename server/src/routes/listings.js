@@ -121,18 +121,22 @@ router.post('/auto-list', async (req, res) => {
   try {
     const result = await batchListToTaobao(products);
 
-    // Record listings for each product
-    for (const product of products) {
+    // Record listings based on per-product results
+    const productResults = result.results || [];
+    for (const pr of productResults) {
+      const product = products.find(p => p.id === pr.id);
+      if (!product) continue;
+
       insert('listings', {
         product_id: product.id,
-        taobao_item_id: null,
-        status: result.success ? 'pending' : 'failed',
+        taobao_item_id: pr.taobaoItemId || null,
+        status: pr.success ? 'listed' : 'failed',
         csv_path: null,
-        listed_at: null,
+        listed_at: pr.success ? new Date().toISOString() : null,
         created_at: new Date().toISOString(),
       });
       update('my_products', product.id, {
-        status: result.success ? 'ready' : 'draft',
+        status: pr.success ? 'listed' : 'draft',
         updated_at: new Date().toISOString(),
       });
     }

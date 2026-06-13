@@ -37,15 +37,25 @@ export default function ListingManager() {
   const handleAutoList = async (productIds) => {
     setAutoListing(true);
     try {
-      await autoListTaobao({ productIds });
+      const { data } = await autoListTaobao({ productIds });
       setSelectedRowKeys([]);
-      message.success('浏览器已打开，请在新窗口中登录淘宝并确认提交');
-      // Poll for status updates
-      setTimeout(fetchData, 5000);
-      setTimeout(fetchData, 15000);
-      setTimeout(fetchData, 30000);
-    } catch {
-      message.error('启动失败');
+
+      // Show detailed results
+      const results = data.results || [];
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+
+      if (successCount > 0 && failCount === 0) {
+        message.success(`全部 ${successCount} 件商品上架成功！`);
+      } else if (successCount > 0) {
+        message.warning(`${successCount} 件成功，${failCount} 件失败。请查看控制台日志。`);
+      } else {
+        message.error(`全部 ${failCount} 件商品上架失败：${results[0]?.message || '未知错误'}`);
+      }
+
+      fetchData();
+    } catch (err) {
+      message.error('启动失败: ' + (err.response?.data?.message || err.message));
     }
     setAutoListing(false);
   };
