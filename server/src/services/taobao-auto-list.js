@@ -1,10 +1,15 @@
 /**
  * Taobao auto-listing service via Playwright
  *
+ * KEY BREAKTHROUGH (2026-06-13):
+ *   Image upload works via the iframe-based file selector (sucai-selector-ng),
+ *   NOT through the main page DOM. See uploadImagesViaIframe().
+ *
  * Architecture:
  * - launchContext(): persistent browser context with saved login
  * - searchAndSelectCategory(): find and select product category
  * - fillForm(): fill title, price, stock on publish page
+ * - uploadImagesViaIframe(): upload product images via iframe dialog
  * - submitAndVerify(): click submit and check success
  * - batchListToTaobao(): orchestrates the full flow
  */
@@ -91,14 +96,15 @@ function resolveCategory(product) {
 
   const title = product.title || '';
   // Map product keywords to Taobao category search keywords
-  // These should match the actual Taobao category names
+  // These must be precise enough to find the correct Taobao category leaf
+  // The Taobao AI search uses keyword matching, so use specific subcategory names
   const categoryMap = [
-    { keywords: ['花茶', '菊花', '玫瑰', '茉莉', '桂花', '洛神', '花草'], category: '代用茶' },
+    { keywords: ['花茶', '菊花', '玫瑰', '茉莉', '桂花', '洛神', '花草', '金丝皇菊'], category: '组合型花茶' },
     { keywords: ['枸杞', '黄芪', '三七', '灵芝', '石斛', '人参', '当归', '党参'], category: '药食同源' },
     { keywords: ['红枣', '银耳', '燕窝', '阿胶', '鹿茸'], category: '滋补品' },
-    { keywords: ['茶叶', '红茶', '绿茶', '铁观音', '普洱', '龙井'], category: '茶叶' },
-    { keywords: ['柠檬片', '陈皮', '薄荷', '决明子', '胖大海'], category: '代用茶' },
-    { keywords: ['蜂蜜', '核桃', '葡萄干', '红枣', '坚果'], category: '食品' },
+    { keywords: ['红茶', '绿茶', '铁观音', '普洱', '龙井', '乌龙', '白茶'], category: '茶叶' },
+    { keywords: ['柠檬片', '陈皮', '薄荷', '决明子', '胖大海'], category: '组合型花茶' },
+    { keywords: ['蜂蜜', '核桃', '葡萄干', '坚果'], category: '食品' },
     { keywords: ['手机壳', '数据线', '充电器', '耳机'], category: '手机配件' },
     { keywords: ['收纳', '整理箱', '置物架'], category: '收纳用品' },
   ];
@@ -535,18 +541,191 @@ async function fillForm(page, title, price, desc, product) {
     }
   }
 
-  // ---- Check images ----
+  // ---- Step 5: Upload images via iframe-based file selector ----
   const images = parseImages(product?.images);
-  filled.images = images.length > 0;
   if (images.length > 0) {
-    console.log(`[Taobao] ⚠ ${images.length} images available — need manual upload`);
+    console.log(`[Taobao] Uploading ${images.length} images...`);
+    try {
+      await uploadImagesViaIframe(page, images);
+      filled.images = true;
+      console.log('[Taobao] ✓ Images uploaded');
+    } catch (e) {
+      filled.images = false;
+      console.log('[Taobao] Image upload error:', e.message);
+    }
   } else {
     console.log('[Taobao] ⚠ No images — 1:1主图 is required, will need manual upload');
+    filled.images = false;
   }
 
   console.log('[Taobao] Fill summary:', JSON.stringify(filled));
   await page.screenshot({ path: join(SCREENSHOT_DIR, `after_fill_${Date.now()}.png`), fullPage: false });
   return filled;
+}
+
+/**
+ * Upload images to Taobao 1:1 main image slots via the iframe-based file selector.
+ *
+ * BREAKTHROUGH (2026-06-13): The previous 7 strategies all failed because
+ * they searched for file inputs in the main page DOM. Taobao's image upload
+ * actually lives inside a cross-origin iframe (sucai-selector-ng).
+ *
+ * This function navigates the iframe workflow:
+ *   1. Click each upload slot (.item-medium or .sell-component-image-v2)
+ *   2. In the opened iframe, click "本地上传" (triggers fileChooser)
+ *   3. Upload the local image file via Playwright's fileChooser API
+ *   4. Click the uploaded image name to select it
+ *   5. Click "完成" to close the dialog and apply the image
+ *
+ * Known caveats:
+ *   - The iframe is at market.m.taobao.com (cross-origin), so we use
+ *     Playwright frame locators instead of raw DOM access.
+ *   - File inputs inside the iframe are dynamically created on each click.
+ *   - Upload order: 1:1主图 (5 slots) first, then 3:4主图 (5 slots).
+ */
+async function uploadImagesViaIframe(page, imagePaths) {
+  const fs = await import('fs');
+  const downloadDir = join(PROJECT_ROOT, 'data', 'temp-images');
+
+  if (!existsSync(downloadDir)) mkdirSync(downloadDir, { recursive: true });
+
+  // Collect all upload slots — 1:1主图 (medium, 90x90) + 3:4主图 (120px tall)
+  const slots = page.locator('.sell-component-material-item-view');
+  const slotCount = await slots.count();
+
+  if (slotCount === 0) {
+    throw new Error('No image upload slots found on the page');
+  }
+
+  console.log(`[Taobao] Found ${slotCount} upload slots, uploading ${imagePaths.length} images`);
+
+  for (let i = 0; i < imagePaths.length; i++) {
+    const imgPath = imagePaths[i];
+
+    // Select the correct slot — 1:1主图 slots come first (.item-medium)
+    let targetSlot;
+    if (i < 5) {
+      // 1:1 main image slots
+      targetSlot = page.locator('.sell-component-material-item-view.item-medium').nth(i);
+    } else {
+      // 3:4 main image slots (fallback: use any remaining slot)
+      targetSlot = slots.nth(Math.min(i, slotCount - 1));
+    }
+
+    // Verify slot exists
+    const slotExists = await targetSlot.count();
+    if (slotExists === 0) {
+      console.log(`[Taobao] Slot ${i} not found, skipping`);
+      continue;
+    }
+
+    // If the image path is a URL (not a local file), download it first
+    let localPath = imgPath;
+    if (imgPath.startsWith('http://') || imgPath.startsWith('https://')) {
+      try {
+        const response = await fetch(imgPath);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const ext = imgPath.split('.').pop()?.split('?')[0] || 'jpg';
+        localPath = join(downloadDir, `img_${i}_${Date.now()}.${ext}`);
+        writeFileSync(localPath, buffer);
+      } catch (e) {
+        console.log(`[Taobao] Failed to download ${imgPath}: ${e.message}, skipping`);
+        continue;
+      }
+    }
+
+    // Verify local file exists
+    if (!existsSync(localPath)) {
+      console.log(`[Taobao] File not found: ${localPath}, skipping`);
+      continue;
+    }
+
+    console.log(`[Taobao] Uploading image ${i + 1}/${imagePaths.length}: ${localPath}`);
+
+    try {
+      // Step 1: Click the upload slot to open the iframe dialog
+      await targetSlot.click({ force: true });
+      await page.waitForTimeout(1500);
+
+      // Step 2: Wait for the sucai-selector iframe
+      const picFrame = page.frameLocator('iframe[src*="sucai-selector"]');
+
+      // Step 3: Click "本地上传" and catch the fileChooser
+      const localBtn = picFrame.getByText('本地上传');
+      const btnVisible = await localBtn.first().isVisible({ timeout: 5000 }).catch(() => false);
+
+      if (!btnVisible) {
+        console.log('[Taobao] "本地上传" not visible, retrying slot click...');
+        await targetSlot.click({ force: true });
+        await page.waitForTimeout(2000);
+      }
+
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser', { timeout: 8000 }).catch(() => null),
+        localBtn.first().click({ timeout: 3000 }).catch(() => {})
+      ]);
+
+      if (!fileChooser) {
+        // Fallback: try using setInputFiles directly on the hidden file input
+        const fileInput = picFrame.locator('input[type="file"]').first();
+        if (await fileInput.count() > 0) {
+          await fileInput.setInputFiles(localPath);
+          await page.waitForTimeout(2000);
+        } else {
+          console.log(`[Taobao] No fileChooser or file input for slot ${i}`);
+          continue;
+        }
+      } else {
+        await fileChooser.setFiles(localPath);
+        await page.waitForTimeout(2000);
+      }
+
+      // Step 4: Click the uploaded image name in the iframe to select it
+      const fileName = localPath.split('/').pop().split('\\').pop();
+      const nameEl = picFrame.getByText(fileName).first();
+      if (await nameEl.count() > 0) {
+        await nameEl.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(500);
+      } else {
+        console.log(`[Taobao] File "${fileName}" not found in iframe list after upload`);
+      }
+
+      // Step 5: Click "完成" to confirm
+      const doneBtn = picFrame.getByText('完成');
+      if (await doneBtn.count() > 0) {
+        await doneBtn.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(2000);
+      }
+
+      // Step 6: Verify — check if slot switched from dashed to solid
+      const isFilled = await targetSlot.locator('.main-content.solid').count();
+      const hasImg = await targetSlot.locator('img').count();
+      console.log(`[Taobao] Slot ${i}: filled=${isFilled > 0}, hasImg=${hasImg > 0}`);
+
+      // Close modal if still open (press Escape)
+      const modal = page.locator('.next-overlay-inner.sell-component-image-v2-media-popup');
+      if (await modal.isVisible({ timeout: 1000 }).catch(() => false)) {
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(500);
+      }
+
+    } catch (e) {
+      console.log(`[Taobao] Upload error for slot ${i}: ${e.message}`);
+      // Try to close any open modals
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(500);
+    }
+
+    // Clean up temp file if it was downloaded
+    if (localPath !== imgPath && existsSync(localPath)) {
+      try { fs.rmSync(localPath); } catch {}
+    }
+  }
+
+  // Final: check how many slots are filled
+  const filledSlots = await page.locator('.sell-component-material-item-view .main-content.solid').count();
+  const filledImgs = await page.locator('.sell-component-material-item-view img').count();
+  console.log(`[Taobao] Upload complete: ${filledSlots} solid slots, ${filledImgs} images`);
 }
 
 function parseImages(imagesField) {

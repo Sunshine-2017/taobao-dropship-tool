@@ -1,11 +1,10 @@
-﻿import express from 'express';
+import express from 'express';
 import cors from 'cors';
-import { initDefaults } from './db.js';
-import productsRouter from './routes/products.js';
+import { ensureDefaults, closeDb } from './sqlite.js';
+import productsRouter from './routes/products-sqlite.js';
 import sourcingRouter from './routes/sourcing.js';
 import listingsRouter from './routes/listings.js';
 import settingsRouter from './routes/settings.js';
-import listingsComputerUseRouter from './routes/listings-computer-use.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -13,20 +12,20 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Init database defaults
-initDefaults();
+ensureDefaults();
 
-// Routes
 app.use('/api/products', productsRouter);
 app.use('/api/sourcing', sourcingRouter);
 app.use('/api/listings', listingsRouter);
-app.use('/api/listings', listingsComputerUseRouter);
 app.use('/api/settings', settingsRouter);
 
-// Health check
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
+
+// Graceful shutdown
+process.on('SIGINT', () => { closeDb(); process.exit(); });
+process.on('SIGTERM', () => { closeDb(); process.exit(); });
 
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);

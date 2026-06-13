@@ -1,8 +1,15 @@
 import { readTable } from '../db.js';
+import type { SettingsEntry } from '../db.js';
 
-export function applyPricing(costPrice) {
-  const settings = readTable('settings');
-  const getSetting = (key, defaultVal) => {
+export interface PricingResult {
+  cost_price: number;
+  selling_price: number;
+  profit_margin: number;
+}
+
+export function applyPricing(costPrice: number): PricingResult {
+  const settings = readTable<SettingsEntry>('settings');
+  const getSetting = (key: string, defaultVal: string): string => {
     const s = settings.find(item => item.key === key);
     return s ? s.value : defaultVal;
   };
