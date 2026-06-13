@@ -80,7 +80,7 @@ export function ensureDefaults(): void {
   const defaults: Record<string, string> = {
     price_multiplier: '1.8',
     price_fixed_add: '5',
-    default_category: '中药茶/中药饮品',
+    default_category: '花茶',
     default_freight_template: '包邮',
   };
   const insertStmt = d.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');

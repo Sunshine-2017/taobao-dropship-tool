@@ -24,6 +24,7 @@
     "uuid": "^10.0.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
+    "@types/better-sqlite3": "^7.6.13",
+    "tsx": "^4.19.0"
   }
 }

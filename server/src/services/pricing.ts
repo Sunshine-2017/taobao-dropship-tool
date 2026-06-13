@@ -1,5 +1,4 @@
-import { readTable } from '../db.js';
-import type { SettingsEntry } from '../db.js';
+import { getDb } from '../sqlite.js';
 
 export interface PricingResult {
   cost_price: number;
@@ -8,9 +7,10 @@ export interface PricingResult {
 }
 
 export function applyPricing(costPrice: number): PricingResult {
-  const settings = readTable<SettingsEntry>('settings');
+  const db = getDb();
+  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   const getSetting = (key: string, defaultVal: string): string => {
-    const s = settings.find(item => item.key === key);
+    const s = rows.find(item => item.key === key);
     return s ? s.value : defaultVal;
   };
 

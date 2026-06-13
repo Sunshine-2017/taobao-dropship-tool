@@ -2,9 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import { ensureDefaults, closeDb } from './sqlite.js';
 import productsRouter from './routes/products-sqlite.js';
-import sourcingRouter from './routes/sourcing.js';
-import listingsRouter from './routes/listings.js';
-import settingsRouter from './routes/settings.js';
+import sourcingRouter from './routes/sourcing-sqlite.js';
+import listingsRouter from './routes/listings-sqlite.js';
+import settingsRouter from './routes/settings-sqlite.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
