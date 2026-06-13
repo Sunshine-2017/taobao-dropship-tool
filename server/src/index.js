@@ -5,6 +5,7 @@ import productsRouter from './routes/products.js';
 import sourcingRouter from './routes/sourcing.js';
 import listingsRouter from './routes/listings.js';
 import settingsRouter from './routes/settings.js';
+import listingsComputerUseRouter from './routes/listings-computer-use.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -19,6 +20,7 @@ initDefaults();
 app.use('/api/products', productsRouter);
 app.use('/api/sourcing', sourcingRouter);
 app.use('/api/listings', listingsRouter);
+app.use('/api/listings', listingsComputerUseRouter);
 app.use('/api/settings', settingsRouter);
 
 // Health check
