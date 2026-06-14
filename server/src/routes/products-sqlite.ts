@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getDb } from '../sqlite.js';
 import { applyPricing } from '../services/pricing.js';
 import type { Product } from '../db.js';
+import { generateBatchEditExcel } from '../services/taobao-batch-edit.js';
 
 const router = Router();
 
@@ -163,7 +164,6 @@ router.post('/export-batch-edit', (req: Request, res: Response) => {
     return res.status(400).json({ error: '没有可导出的商品' });
   }
 
-  const { generateBatchEditExcel } = require('../services/taobao-batch-edit.js');
   const batchRows = rows.map(r => ({
     id: r.id as number,
     title: r.title as string,
