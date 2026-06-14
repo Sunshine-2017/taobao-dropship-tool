@@ -228,7 +228,7 @@ async function searchAndSelectCategory(page, cat) {
       if (await btn.count() > 0 && await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
         console.log(`[Taobao] Clicking: "${txt}"`);
         await btn.click();
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(5000);
         confirmed = true;
         break;
       }
@@ -471,160 +471,271 @@ async function fillStock(page, filled) {
 }
 
 /**
- * Fill brand field. The brand field on Taobao publish form can be:
- * - A text input where you type a brand name
- * - A dropdown/select-like component
- * Strategy: first try to find an input near "品牌" text, fill "其他".
- * If that fails, try clicking the label to open a dropdown.
+ * Fill brand field. Based on diagnostic:
+ * - INPUT @ w=88px top=1107, placeholder="请选择" (it's a dropdown/selector)
+ * - Label text "品牌" nearby
+ * Strategy: click the input to open dropdown, then pick first option or type
  */
 async function fillBrand(page, filled) {
-  console.log('[Taobao] Filling brand...');
+  console.log('[Taobao] Filling brand (dropdown)...');
   try {
-    // Strategy A: direct input fill
+    // Diagnostic confirmed: brand is a "请选择" dropdown INPUT @ top≈1100px
+    // Approach: find the input by its narrow width near brand label text
     const brandResult = await page.evaluate(() => {
-      // Walk every visible input looking for one whose parent text starts with "品牌"
       const inputs = document.querySelectorAll('input:not([type="hidden"])');
       for (const inp of inputs) {
         const r = inp.getBoundingClientRect();
-        if (r.width < 30 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 5000) continue;
-        // Check parent text up to 4 levels
-        let el = inp;
-        for (let d = 0; d < 5 && el; d++) {
-          const t = (el.textContent || '').trim();
-          if (/^品牌\s*$/.test(t) || (t.includes('品牌') && (t.includes('请输入') || t.includes('选择')))) {
-            inp.focus();
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(inp, '其他');
-            inp.dispatchEvent(new Event('input', { bubbles: true }));
-            inp.dispatchEvent(new Event('change', { bubbles: true }));
-            inp.dispatchEvent(new Event('blur', { bubbles: true }));
-            return { success: true, method: 'input' };
+        // Narrow width + reasonable top range — brand dropdown is ~88px wide
+        if (r.width < 30 || r.width > 120 || r.height < 8) continue;
+        if (r.top < 600 || r.top > 2000) continue;
+        const ph = (inp.placeholder || '').trim();
+        // Match by placeholder: "请选择" + near "品牌" text
+        if (ph.includes('请选择')) {
+          // Check parent text for "品牌"
+          let el = inp.parentElement;
+          for (let d = 0; d < 4 && el; d++) {
+            const t = (el.textContent || '').trim();
+            if (t.includes('品牌')) {
+              // Click the input to open dropdown
+              inp.click();
+              return { success: true, method: 'click', width: r.width, top: r.top };
+            }
+            el = el.parentElement;
           }
-          el = el.parentElement;
         }
       }
       return { success: false };
     });
-    if (brandResult.success) { filled.brand = true; console.log('[Taobao] ✓ Brand: 其他'); return; }
 
-    // Strategy B: click "品牌" label to open dropdown, then select first option
-    const brandLabel = page.locator(':text-is("品牌")').first();
-    if (await brandLabel.count() > 0) {
-      await brandLabel.click();
-      await page.waitForTimeout(800);
-      // Try to type into whatever appeared
-      const activeEl = page.locator(':focus');
-      if (await activeEl.count() > 0) {
-        await activeEl.fill('其他');
+    if (brandResult.success) {
+      filled.brand = true;
+      console.log('[Taobao] ✓ Brand dropdown clicked');
+      await page.waitForTimeout(1200);
+      // After clicking, a dropdown menu appears. Pick first option or type.
+      // Try clicking first dropdown option
+      const firstOption = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"], [class*="dropdown"] li, .next-menu-item, .next-select-item').first();
+      if (await firstOption.count() > 0 && await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await firstOption.click();
+        console.log('[Taobao] ✓ Brand: selected first option');
+      } else {
+        // Type "其他" as fallback
+        await page.keyboard.type('其他', { delay: 80 });
         await page.keyboard.press('Enter');
-        filled.brand = true;
-        console.log('[Taobao] ✓ Brand (label click + fill)');
-        return;
+        console.log('[Taobao] ✓ Brand: typed 其他');
       }
+      await page.waitForTimeout(500);
+      return;
     }
-    console.log('[Taobao] Brand fill failed (may need manual input)');
+
+    // Strategy C: direct Playwright click on brand label + type
+    console.log('[Taobao] Brand evaluate failed, trying Playwright...');
+    const brandInput = page.locator('input[placeholder*="请选择"]').filter({ has: page.locator('xpath=..//*[contains(text(),"品牌")]') }).first();
+    if (await brandInput.count() === 0) {
+      // Fallback: click any narrow input between top 600-2000 with "请选择" placeholder
+      const allInputs = page.locator('input[placeholder*="请选择"]');
+      const ic = await allInputs.count();
+      for (let i = 0; i < ic; i++) {
+        const inp = allInputs.nth(i);
+        const box = await inp.boundingBox().catch(() => null);
+        if (box && box.width > 30 && box.width < 120 && box.y > 600 && box.y < 2000) {
+          await inp.click();
+          await page.waitForTimeout(800);
+          const opts = page.locator('[class*="option"], [class*="menu-item"], li[class*="select"]');
+          if (await opts.count() > 0) { await opts.first().click(); filled.brand = true; break; }
+          await page.keyboard.type('其他', { delay: 50 });
+          await page.keyboard.press('Enter');
+          filled.brand = true;
+          console.log('[Taobao] ✓ Brand (playwright narrow-input): 其他');
+          break;
+        }
+      }
+    } else {
+      await brandInput.click();
+      await page.waitForTimeout(800);
+      await page.keyboard.type('其他', { delay: 50 });
+      await page.keyboard.press('Enter');
+      filled.brand = true;
+      console.log('[Taobao] ✓ Brand (playwright): 其他');
+    }
   } catch (e) {
     console.log('[Taobao] Brand fill error:', e.message);
   }
 }
 
 /**
- * Fill packaging field. Usually a dropdown or input.
- * Common values: "袋装", "罐装", "盒装", "散装"
+ * Fill packaging field. Based on diagnostic:
+ * - INPUT @ w=187px top=772, placeholder="请选择" (dropdown)
+ * - Label text "包装方式" nearby
+ * Strategy: click the dropdown, pick first option or type "袋装"
  */
 async function fillPackaging(page, filled) {
-  console.log('[Taobao] Filling packaging...');
+  console.log('[Taobao] Filling packaging (dropdown)...');
   const DEFAULT_PACKAGING = '袋装';
   try {
-    // Strategy A: find input near "包装" text
-    const pkgResult = await page.evaluate(({ pkg }) => {
+    // Packaging dropdown INPUT @ top≈770, w≈187, placeholder="请选择"
+    const pkgResult = await page.evaluate(() => {
       const inputs = document.querySelectorAll('input:not([type="hidden"])');
       for (const inp of inputs) {
         const r = inp.getBoundingClientRect();
-        if (r.width < 30 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 5000) continue;
-        let el = inp;
-        for (let d = 0; d < 5 && el; d++) {
-          const t = (el.textContent || '').trim();
-          if (t.includes('包装') && (t.includes('请') || t.includes('选择') || t.length < 10)) {
-            inp.focus();
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(inp, pkg);
-            inp.dispatchEvent(new Event('input', { bubbles: true }));
-            inp.dispatchEvent(new Event('change', { bubbles: true }));
-            inp.dispatchEvent(new Event('blur', { bubbles: true }));
-            return { success: true, method: 'input' };
+        // Packaging dropdown: wider than brand, ~150-200px
+        if (r.width < 100 || r.width > 250 || r.height < 8) continue;
+        if (r.top < 500 || r.top > 2000) continue;
+        const ph = (inp.placeholder || '').trim();
+        if (ph.includes('请选择')) {
+          let el = inp.parentElement;
+          for (let d = 0; d < 4 && el; d++) {
+            const t = (el.textContent || '').trim();
+            if (t.includes('包装')) {
+              inp.click();
+              return { success: true, method: 'click', width: r.width, top: r.top };
+            }
+            el = el.parentElement;
           }
-          el = el.parentElement;
         }
       }
       return { success: false };
-    }, { pkg: DEFAULT_PACKAGING });
-    if (pkgResult.success) { filled.packaging = true; console.log(`[Taobao] ✓ Packaging: ${DEFAULT_PACKAGING}`); return; }
+    });
 
-    // Strategy B: click the label
-    const pkgLabel = page.locator('text="包装"').first();
-    if (await pkgLabel.count() > 0 && await pkgLabel.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await pkgLabel.click();
-      await page.waitForTimeout(600);
-      // Type the value
-      const kb = page.keyboard;
-      await kb.type(DEFAULT_PACKAGING, { delay: 50 });
-      await kb.press('Enter');
+    if (pkgResult.success) {
       filled.packaging = true;
-      console.log(`[Taobao] ✓ Packaging (type): ${DEFAULT_PACKAGING}`);
+      console.log('[Taobao] ✓ Packaging dropdown clicked');
+      await page.waitForTimeout(1200);
+      const firstOption = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"], [class*="dropdown"] li, .next-menu-item, .next-select-item').first();
+      if (await firstOption.count() > 0 && await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await firstOption.click();
+        console.log(`[Taobao] ✓ Packaging: selected first option`);
+      } else {
+        await page.keyboard.type(DEFAULT_PACKAGING, { delay: 80 });
+        await page.keyboard.press('Enter');
+        console.log(`[Taobao] ✓ Packaging: typed ${DEFAULT_PACKAGING}`);
+      }
+      await page.waitForTimeout(500);
       return;
     }
-    console.log('[Taobao] Packaging fill failed');
+
+    // Fallback
+    console.log('[Taobao] Packaging evaluate failed, trying Playwright...');
+    const allInputs = page.locator('input[placeholder*="请选择"]');
+    const ic = await allInputs.count();
+    for (let i = 0; i < ic; i++) {
+      const inp = allInputs.nth(i);
+      const box = await inp.boundingBox().catch(() => null);
+      if (box && box.width > 100 && box.width < 250 && box.y > 500 && box.y < 2000) {
+        const parentText = await inp.evaluate(el => {
+          let p = el.parentElement;
+          for (let d = 0; d < 4 && p; d++) {
+            if ((p.textContent || '').includes('包装')) return p.textContent;
+            p = p.parentElement;
+          }
+          return '';
+        });
+        if (parentText.includes('包装')) {
+          await inp.click();
+          await page.waitForTimeout(800);
+          await page.keyboard.type(DEFAULT_PACKAGING, { delay: 50 });
+          await page.keyboard.press('Enter');
+          filled.packaging = true;
+          console.log(`[Taobao] ✓ Packaging (playwright): ${DEFAULT_PACKAGING}`);
+          break;
+        }
+      }
+    }
   } catch (e) {
     console.log('[Taobao] Packaging fill error:', e.message);
   }
 }
 
 /**
- * Fill origin (产地) field. Usually a dropdown or input.
- * Default: "中国大陆" or city name.
+ * Fill origin (产地) field. Based on diagnostic:
+ * - Origin was not explicitly listed in the diagnostic results
+ * - Likely another "请选择" dropdown, between packaging (top=772) and price (top=2172)
+ * Strategy: scan for "请选择" inputs in the expected range and try to fill
  */
 async function fillOrigin(page, filled) {
   console.log('[Taobao] Filling origin...');
   const DEFAULT_ORIGIN = '中国大陆';
   try {
-    // Strategy A: find input near "产地" text
-    const originResult = await page.evaluate(({ origin }) => {
+    // Scan for any remaining unfilled "请选择" dropdowns in the upper half
+    const originResult = await page.evaluate(() => {
       const inputs = document.querySelectorAll('input:not([type="hidden"])');
       for (const inp of inputs) {
         const r = inp.getBoundingClientRect();
         if (r.width < 30 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 5000) continue;
+        if (r.top < 500 || r.top > 2200) continue;
+        const ph = (inp.placeholder || '').trim();
+        if (ph.includes('请选择')) {
+          // Check parent chain for "产地" keyword
+          let el = inp;
+          for (let d = 0; d < 6 && el; d++) {
+            const t = (el.textContent || '').trim();
+            if (t.includes('产地') || t.includes('原产地') || t.includes('货源地')) {
+              inp.click();
+              return { success: true, method: 'click', width: r.width, top: r.top };
+            }
+            el = el.parentElement;
+          }
+        }
+      }
+      // Fallback: look for any input whose parent text contains "产地" regardless of placeholder
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 30 || r.height < 8) continue;
         let el = inp;
-        for (let d = 0; d < 5 && el; d++) {
+        for (let d = 0; d < 6 && el; d++) {
           const t = (el.textContent || '').trim();
-          if ((t.includes('产地') || t.includes('原产地')) && (t.includes('请') || t.includes('选择') || t.length < 12)) {
+          if (t.includes('产地') || t.includes('原产地')) {
             inp.focus();
             const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(inp, origin);
+            setter.call(inp, '中国大陆');
             inp.dispatchEvent(new Event('input', { bubbles: true }));
             inp.dispatchEvent(new Event('change', { bubbles: true }));
             inp.dispatchEvent(new Event('blur', { bubbles: true }));
-            return { success: true, method: 'input' };
+            return { success: true, method: 'fill' };
           }
           el = el.parentElement;
         }
       }
       return { success: false };
-    }, { origin: DEFAULT_ORIGIN });
-    if (originResult.success) { filled.origin = true; console.log(`[Taobao] ✓ Origin: ${DEFAULT_ORIGIN}`); return; }
+    });
 
-    // Strategy B: click label
-    const originLabel = page.locator('text="产地"').first();
+    if (originResult.success && originResult.method === 'click') {
+      filled.origin = true;
+      console.log('[Taobao] ✓ Origin dropdown clicked');
+      await page.waitForTimeout(1000);
+      const firstOption = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"]').first();
+      if (await firstOption.count() > 0 && await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await firstOption.click();
+        console.log('[Taobao] ✓ Origin: selected first option');
+      } else {
+        await page.keyboard.type(DEFAULT_ORIGIN, { delay: 50 });
+        await page.keyboard.press('Enter');
+        console.log(`[Taobao] ✓ Origin: typed ${DEFAULT_ORIGIN}`);
+      }
+      await page.waitForTimeout(500);
+      return;
+    }
+    if (originResult.success && originResult.method === 'fill') {
+      filled.origin = true;
+      console.log(`[Taobao] ✓ Origin: ${DEFAULT_ORIGIN}`);
+      return;
+    }
+
+    // Strategy C: Playwright click label
+    const originLabel = page.locator(':text("产地"), :text("原产地"), :text("货源地")').first();
     if (await originLabel.count() > 0 && await originLabel.isVisible({ timeout: 2000 }).catch(() => false)) {
       await originLabel.click();
       await page.waitForTimeout(600);
+      const opts = page.locator('[class*="option"], [class*="menu-item"]');
+      if (await opts.count() > 0) {
+        await opts.first().click();
+        filled.origin = true;
+        console.log('[Taobao] ✓ Origin: selected option');
+        return;
+      }
       await page.keyboard.type(DEFAULT_ORIGIN, { delay: 50 });
       await page.keyboard.press('Enter');
       filled.origin = true;
-      console.log(`[Taobao] ✓ Origin (type): ${DEFAULT_ORIGIN}`);
+      console.log(`[Taobao] ✓ Origin (playwright): ${DEFAULT_ORIGIN}`);
       return;
     }
     console.log('[Taobao] Origin fill failed');
@@ -634,23 +745,26 @@ async function fillOrigin(page, filled) {
 }
 
 /**
- * Fill freight template (运费模板). Usually a dropdown/select.
- * Default: try "包邮" or "运费模板" click.
+ * Fill freight template (运费模板). Based on diagnostic:
+ * - Label text "运费模板" @ top=2623
+ * - This is usually a click-to-select dropdown
+ * Strategy: click the edit icon/button next to "运费模板", select first template
  */
 async function fillFreight(page, filled) {
   console.log('[Taobao] Filling freight template...');
   try {
-    // Strategy A: look for "运费模板" or "运费" text, click to open selector
+    // Diagnostic: "运费模板" label exists at top=2623
+    // Try clicking the label or nearby button
     const freightLabels = ['运费模板', '运费', '物流'];
     for (const label of freightLabels) {
       const el = page.locator(`text="${label}"`).first();
       if (await el.count() > 0 && await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-        // Click the label or its parent to open dropdown
+        // Click the label first to focus the section
         await el.click();
         await page.waitForTimeout(800);
 
-        // Look for dropdown options
-        const options = page.locator('[class*="option"], [class*="item"], [class*="menu-item"], li, .select-item');
+        // Look for dropdown options that appeared
+        const options = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"], li[class*="select"], .next-menu-item, .next-select-item');
         const optCount = await options.count();
         if (optCount > 0) {
           await options.first().click();
@@ -660,11 +774,40 @@ async function fillFreight(page, filled) {
           return;
         }
 
-        // If no dropdown appeared, try typing "包邮"
+        // If no dropdown, try clicking the parent container (might be a link/button)
+        const parentBtn = el.locator('..').locator('a, button, [class*="edit"], [class*="btn"]').first();
+        if (await parentBtn.count() > 0) {
+          await parentBtn.click();
+          await page.waitForTimeout(800);
+          const opts2 = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"]');
+          if (await opts2.count() > 0 && await opts2.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+            await opts2.first().click();
+            filled.freight = true;
+            console.log('[Taobao] ✓ Freight: selected via parent button');
+            return;
+          }
+        }
+
+        // Last resort: type "包邮"
         await page.keyboard.type('包邮', { delay: 50 });
         await page.keyboard.press('Enter');
         filled.freight = true;
         console.log('[Taobao] ✓ Freight (typed): 包邮');
+        return;
+      }
+    }
+
+    // Try clicking the edit area directly
+    console.log('[Taobao] Freight: trying direct area click...');
+    const freightArea = page.locator('[class*="freight"], [class*="Freight"], [class*="logistics"], [class*="Logistics"], [class*="delivery"]').first();
+    if (await freightArea.count() > 0 && await freightArea.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await freightArea.click();
+      await page.waitForTimeout(800);
+      const opts = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"], li[class*="select"]');
+      if (await opts.count() > 0) {
+        await opts.first().click();
+        filled.freight = true;
+        console.log('[Taobao] ✓ Freight: selected via area click');
         return;
       }
     }
@@ -994,45 +1137,39 @@ export async function batchListToTaobao(products) {
   const context = await launchContext();
   const page = context.pages()[0] || await context.newPage();
 
-  // Login check
+    // Login check — wait for redirects to settle
   console.log('[Taobao] Checking login status...');
-  const loginErr = await page.goto('https://myseller.taobao.com/home.htm', {
+  const loginErr2 = await page.goto('https://qn.taobao.com/home.html/SellManage/on_sale?current=1&pageSize=20', {
     waitUntil: 'domcontentloaded', timeout: 30000,
   }).catch(e => e);
-  if (loginErr) console.log('[Taobao] Navigation error:', loginErr.message);
-  await page.waitForTimeout(2000);
+  if (loginErr2) console.log('[Taobao] Navigation error:', loginErr2.message);
 
-  const url = page.url();
-  const isOnSellerPage = url.includes('myseller.taobao.com') || url.includes('item.upload.taobao.com');
+  // Wait for redirect chain (qn -> login or seller)
+  await page.waitForTimeout(5000);
+  const finalUrl2 = page.url();
+  console.log('[Taobao] Final URL after login check:', finalUrl2);
 
-  if (!isOnSellerPage) {
-    if (url.includes('login') || url.includes('passport')) {
-      console.log('[Taobao] Login required — please scan QR code...');
-    } else {
-      console.log('[Taobao] Navigating to login page...');
-      await page.goto('https://login.taobao.com/member/login.jhtml', {
-        waitUntil: 'domcontentloaded', timeout: 15000,
-      }).catch(() => {});
+  const isLoggedIn2 = (finalUrl2.includes('myseller.taobao.com') && !finalUrl2.includes('login')) || finalUrl2.includes('item.upload.taobao.com') || finalUrl2.includes('qn.taobao.com/home.html/SellManage');
+
+  if (!isLoggedIn2) {
+    if (finalUrl2.includes('login') || finalUrl2.includes('passport')) {
+      console.log('[Taobao] Login required - please scan QR code...');
     }
-
     try {
-      await page.waitForFunction(
-        () => {
-          const u = window.location.href;
-          return u.includes('myseller.taobao.com') || u.includes('item.upload.taobao.com');
-        },
-        { timeout: 300000, polling: 3000 }
-      );
+      await page.waitForFunction(() => {
+        const u = window.location.href;
+        return u.includes('myseller.taobao.com') || u.includes('item.upload.taobao.com');
+      }, { timeout: 300000, polling: 3000 });
       await page.waitForTimeout(3000);
       console.log('[Taobao] Login completed');
-    } catch (e) {
+    } catch(e) {
       console.log('[Taobao] Login timeout:', e.message);
     }
   } else {
     console.log('[Taobao] Already logged in');
   }
 
-  // Process each product
+// Process each product
   const results = [];
   for (let i = 0; i < products.length; i++) {
     const p = products[i];
