@@ -129,12 +129,12 @@ router.put('/batch/price', (req: Request, res: Response) => {
 
   const mul = parseFloat(String(multiplier || 1.8));
   const add = parseFloat(String(fixed_add || 5));
-  const stmt = d.prepare("UPDATE my_products SET selling_price = ROUND((cost_price * ? + ?) * 100) / 100, profit_margin = CASE WHEN selling_price > 0 THEN ROUND((1 - cost_price / (ROUND((cost_price * ? + ?) * 100) / 100)) * 10000) / 100 ELSE 0 END, updated_at = datetime('now') WHERE id = ?");
+  const stmt = d.prepare("UPDATE my_products SET selling_price = ROUND((cost_price * ? + ?) * 100) / 100, profit_margin = CASE WHEN ROUND((cost_price * ? + ?) * 100) / 100 > 0 THEN ROUND((1 - cost_price / (ROUND((cost_price * ? + ?) * 100) / 100)) * 10000) / 100 ELSE 0 END, updated_at = datetime('now') WHERE id = ?");
 
   const updateMany = d.transaction((ids: number[]) => {
     let count = 0;
     for (const id of ids) {
-      const r = stmt.run(mul, add, mul, add, id);
+      const r = stmt.run(mul, add, mul, add, mul, add, id);
       count += r.changes;
     }
     return count;
