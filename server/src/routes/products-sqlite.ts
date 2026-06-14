@@ -145,3 +145,33 @@ router.put('/batch/price', (req: Request, res: Response) => {
 });
 
 export default router;
+
+// ── Export batch-edit Excel ──────────────────────────────────────────────
+router.post('/export-batch-edit', (req: Request, res: Response) => {
+  const d = getDb();
+  const { ids } = req.body;
+
+  let rows: Record<string, unknown>[];
+  if (ids && Array.isArray(ids) && ids.length > 0) {
+    const placeholders = ids.map(() => '?').join(',');
+    rows = d.prepare(`SELECT * FROM my_products WHERE id IN (${placeholders})`).all(...ids.map(Number)) as Record<string, unknown>[];
+  } else {
+    rows = d.prepare('SELECT * FROM my_products ORDER BY updated_at DESC LIMIT 500').all() as Record<string, unknown>[];
+  }
+
+  if (rows.length === 0) {
+    return res.status(400).json({ error: '没有可导出的商品' });
+  }
+
+  const { generateBatchEditExcel } = require('../services/taobao-batch-edit.js');
+  const batchRows = rows.map(r => ({
+    id: r.id as number,
+    title: r.title as string,
+    price: r.selling_price as number,
+    outerId: `SKU-${r.id}`,
+  }));
+
+  const filePath = generateBatchEditExcel(batchRows);
+  res.json({ ok: true, file: filePath, count: batchRows.length });
+});
+

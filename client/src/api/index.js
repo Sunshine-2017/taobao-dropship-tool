@@ -52,3 +52,4 @@ export const getSettings = () => api.get('/settings');
 export const updateSettings = (data) => api.put('/settings', data);
 
 export default api;
+export const exportBatchEdit = (data) => api.post('/products/export-batch-edit', data);
