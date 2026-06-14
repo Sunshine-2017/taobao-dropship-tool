@@ -254,12 +254,16 @@ async function searchAndSelectCategory(page, cat) {
 // ============================================================
 async function fillForm(page, title, price, desc, product) {
   console.log(`[Taobao] Filling form: "${title}" ¥${price}`);
-  const filled = { title: false, price: false, qty: false, desc: false, brand: false, images: false };
+  const filled = {
+    title: false, price: false, qty: false, desc: false,
+    brand: false, packaging: false, origin: false, freight: false,
+    images: false,
+  };
 
   // Wait for page to be ready
   await page.waitForTimeout(2000);
 
-  // Expand all sections first
+  // ---- Expand all sections ----
   console.log('[Taobao] Expanding sections...');
   for (const txt of ['展开收起项', '展开', '只看必填']) {
     try {
@@ -273,275 +277,31 @@ async function fillForm(page, title, price, desc, product) {
   }
   await page.waitForTimeout(1000);
 
-  // ---- Step 1: Fill title (textarea with 0/60 counter) ----
-  console.log('[Taobao] Filling title...');
-  try {
-    // Strategy A: Find textarea that's the title field
-    // The title textarea has a character counter showing "0/60" nearby
-    const titleResult = await page.evaluate(({ titleText }) => {
-      const textareas = document.querySelectorAll('textarea');
-      for (const ta of textareas) {
-        const r = ta.getBoundingClientRect();
-        if (r.width < 50 || r.height < 10) continue;
-        if (r.top < 0 || r.top > 3000) continue; // Must be visible area
+  // ---- Step 1: Fill title ----
+  fillTitle(page, title, filled);
 
-        // Check if this textarea is near "宝贝标题" text or has 60 char limit
-        const parent = ta.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || ta.parentElement?.parentElement;
-        const parentText = parent?.textContent || '';
-        const maxLength = ta.getAttribute('maxlength');
+  // ---- Step 2: Fill price ----
+  fillPrice(page, price, filled);
 
-        // Match by: nearby "宝贝标题" text, or maxlength=60, or placeholder containing "标题"
-        const isTitle = parentText.includes('宝贝标题') ||
-                        parentText.includes('标题') && parentText.includes('60') ||
-                        (maxLength === '60') ||
-                        (ta.placeholder && ta.placeholder.includes('标题'));
+  // ---- Step 3: Fill stock ----
+  fillStock(page, filled);
 
-        if (isTitle) {
-          ta.focus();
-          ta.value = titleText;
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
-          // Also trigger React's synthetic event
-          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-          nativeInputValueSetter.call(ta, titleText);
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          return { success: true, method: 'textarea-evaluate' };
-        }
-      }
+  // ---- Step 4: Fill brand ----
+  fillBrand(page, filled);
 
-      // Fallback: find textarea with placeholder or reasonable size
-      for (const ta of textareas) {
-        const r = ta.getBoundingClientRect();
-        if (r.width > 300 && r.height > 20 && r.height < 200) {
-          ta.focus();
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-          setter.call(ta, titleText);
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true, method: 'textarea-fallback' };
-        }
-      }
+  // ---- Step 5: Fill packaging ----
+  fillPackaging(page, filled);
 
-      return { success: false, count: textareas.length };
-    }, { titleText: title });
+  // ---- Step 6: Fill origin ----
+  fillOrigin(page, filled);
 
-    if (titleResult.success) {
-      filled.title = true;
-      console.log(`[Taobao] ✓ Title: "${title}" (${titleResult.method})`);
-    } else {
-      console.log(`[Taobao] Title evaluate failed, found ${titleResult.count} textareas`);
-    }
+  // ---- Step 7: Fill freight template ----
+  fillFreight(page, filled);
 
-    // Strategy B: Playwright locator fallback
-    if (!filled.title) {
-      const ta = page.locator('textarea:visible').first();
-      if (await ta.count() > 0) {
-        await ta.click();
-        await ta.fill(title);
-        filled.title = true;
-        console.log(`[Taobao] ✓ Title (playwright fill): "${title}"`);
-      }
-    }
-  } catch (e) {
-    console.log('[Taobao] Title fill error:', e.message);
-  }
+  // ---- Step 8: Fill description ----
+  if (desc) fillDescription(page, desc, filled);
 
-  // ---- Step 2: Fill price (一口价, has "元" suffix) ----
-  console.log('[Taobao] Filling price...');
-  try {
-    const priceResult = await page.evaluate(({ priceVal }) => {
-      const inputs = document.querySelectorAll('input');
-      for (const inp of inputs) {
-        const r = inp.getBoundingClientRect();
-        if (r.width < 20 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 3000) continue;
-
-        // Check if this input is near "一口价" text
-        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
-        const parentText = parent?.textContent || '';
-
-        // Match: parent text contains "一口价" or nearby text has "元"
-        const isPrice = parentText.includes('一口价') ||
-                        (parentText.includes('元') && !parentText.includes('库存') && parentText.includes('价'));
-
-        if (isPrice && inp.type !== 'hidden') {
-          inp.focus();
-          inp.value = '';
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          setter.call(inp, String(priceVal));
-          inp.dispatchEvent(new Event('input', { bubbles: true }));
-          inp.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true };
-        }
-      }
-      return { success: false };
-    }, { priceVal: price });
-
-    if (priceResult.success) {
-      filled.price = true;
-      console.log(`[Taobao] ✓ Price: ${price}`);
-    } else {
-      console.log('[Taobao] Price evaluate failed, trying Playwright...');
-    }
-
-    // Playwright fallback
-    if (!filled.price) {
-      // Try finding by placeholder
-      const priceInput = page.locator('input:visible:not([type="hidden"])').filter({
-        has: page.locator('xpath=../..//*:has-text("一口价")')
-      }).first();
-
-      // Simpler: find all visible inputs, check parent text
-      const allInputs = page.locator('input:visible:not([type="hidden"])');
-      const ic = await allInputs.count();
-      for (let i = 0; i < ic; i++) {
-        const inp = allInputs.nth(i);
-        const parentText = await inp.evaluate(el => {
-          let p = el.parentElement;
-          for (let d = 0; d < 4 && p; d++) {
-            const t = p.textContent || '';
-            if (t.includes('一口价')) return t;
-            p = p.parentElement;
-          }
-          return '';
-        });
-        if (parentText.includes('一口价')) {
-          const box = await inp.boundingBox().catch(() => null);
-          if (box && box.width > 20) {
-            await inp.click();
-            await inp.fill(String(price));
-            filled.price = true;
-            console.log(`[Taobao] ✓ Price (playwright): ${price}`);
-            break;
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.log('[Taobao] Price fill error:', e.message);
-  }
-
-  // ---- Step 3: Fill stock (总库存, default 1, has "件" suffix) ----
-  console.log('[Taobao] Filling stock...');
-  try {
-    const stockResult = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input');
-      for (const inp of inputs) {
-        const r = inp.getBoundingClientRect();
-        if (r.width < 20 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 3000) continue;
-
-        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
-        const parentText = parent?.textContent || '';
-
-        const isStock = parentText.includes('总库存') || parentText.includes('库存') && parentText.includes('件');
-        if (isStock && inp.type !== 'hidden') {
-          inp.focus();
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          setter.call(inp, '9999');
-          inp.dispatchEvent(new Event('input', { bubbles: true }));
-          inp.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true };
-        }
-      }
-      return { success: false };
-    });
-
-    if (stockResult.success) {
-      filled.qty = true;
-      console.log('[Taobao] ✓ Stock: 9999');
-    }
-  } catch (e) {
-    console.log('[Taobao] Stock fill error:', e.message);
-  }
-
-  // ---- Step 4: Fill brand (品牌, placeholder "请输入") ----
-  console.log('[Taobao] Filling brand...');
-  try {
-    const brandResult = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input');
-      for (const inp of inputs) {
-        const r = inp.getBoundingClientRect();
-        if (r.width < 20 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 3000) continue;
-
-        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
-        const parentText = (parent?.textContent || '').trim();
-
-        // Match: parent text starts with "品牌" and input is near it
-        if (parentText.startsWith('品牌') || parentText.includes('品牌') && parentText.includes('请输入')) {
-          // Skip if this is a select-like element
-          if (inp.tagName === 'SELECT' || inp.readOnly) continue;
-          inp.focus();
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          setter.call(inp, '其他');
-          inp.dispatchEvent(new Event('input', { bubbles: true }));
-          inp.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true };
-        }
-      }
-      return { success: false };
-    });
-
-    if (brandResult.success) {
-      filled.brand = true;
-      console.log('[Taobao] ✓ Brand: 其他');
-    } else {
-      console.log('[Taobao] Brand fill failed (might be dropdown)');
-    }
-  } catch (e) {
-    console.log('[Taobao] Brand fill error:', e.message);
-  }
-
-  // ---- Step 5: Fill description (宝贝详情) ----
-  if (desc) {
-    try {
-      const descResult = await page.evaluate(({ descText }) => {
-        // Find "宝贝详情" section and its editor
-        const all = document.querySelectorAll('*');
-        for (const el of all) {
-          const txt = (el.textContent || '').trim();
-          if (txt === '宝贝详情' || txt === '宝贝详情*') {
-            let container = el.parentElement;
-            for (let d = 0; d < 10 && container; d++) {
-              // Look for rich text editors
-              const editors = container.querySelectorAll('[contenteditable="true"], .ql-editor, [class*="editor"], [class*="Editor"]');
-              for (const ed of editors) {
-                const r = ed.getBoundingClientRect();
-                if (r.width > 100 && r.height > 50) {
-                  ed.focus();
-                  ed.innerHTML = `<p>${descText}</p>`;
-                  ed.dispatchEvent(new Event('input', { bubbles: true }));
-                  return true;
-                }
-              }
-              // Also try textarea
-              const tas = container.querySelectorAll('textarea');
-              for (const ta of tas) {
-                const r = ta.getBoundingClientRect();
-                if (r.width > 100 && r.height > 50) {
-                  ta.focus();
-                  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-                  setter.call(ta, descText);
-                  ta.dispatchEvent(new Event('input', { bubbles: true }));
-                  return true;
-                }
-              }
-              container = container.parentElement;
-            }
-          }
-        }
-        return false;
-      }, { descText: desc });
-
-      filled.desc = descResult;
-      if (descResult) console.log('[Taobao] ✓ Description filled');
-    } catch (e) {
-      console.log('[Taobao] Description fill error:', e.message);
-    }
-  }
-
-  // ---- Step 5: Upload images via iframe-based file selector ----
+  // ---- Step 9: Upload images ----
   const images = parseImages(product?.images);
   if (images.length > 0) {
     console.log(`[Taobao] Uploading ${images.length} images...`);
@@ -563,8 +323,406 @@ async function fillForm(page, title, price, desc, product) {
   return filled;
 }
 
+// ── Individual field fillers ─────────────────────────────────────────
+
+async function fillTitle(page, title, filled) {
+  console.log('[Taobao] Filling title...');
+  try {
+    const titleResult = await page.evaluate(({ titleText }) => {
+      const textareas = document.querySelectorAll('textarea');
+      for (const ta of textareas) {
+        const r = ta.getBoundingClientRect();
+        if (r.width < 50 || r.height < 10) continue;
+        if (r.top < 0 || r.top > 3000) continue;
+        const parent = ta.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || ta.parentElement?.parentElement;
+        const parentText = parent?.textContent || '';
+        const maxLength = ta.getAttribute('maxlength');
+        const isTitle = parentText.includes('宝贝标题') ||
+                        parentText.includes('标题') && parentText.includes('60') ||
+                        (maxLength === '60') ||
+                        (ta.placeholder && ta.placeholder.includes('标题'));
+        if (isTitle) {
+          ta.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(ta, titleText);
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          setter.call(ta, titleText);
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          return { success: true, method: 'textarea-evaluate' };
+        }
+      }
+      for (const ta of textareas) {
+        const r = ta.getBoundingClientRect();
+        if (r.width > 300 && r.height > 20 && r.height < 200) {
+          ta.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(ta, titleText);
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, method: 'textarea-fallback' };
+        }
+      }
+      return { success: false, count: textareas.length };
+    }, { titleText: title });
+
+    if (titleResult.success) {
+      filled.title = true;
+      console.log(`[Taobao] ✓ Title: "${title}" (${titleResult.method})`);
+    }
+    if (!filled.title) {
+      const ta = page.locator('textarea:visible').first();
+      if (await ta.count() > 0) {
+        await ta.click();
+        await ta.fill(title);
+        filled.title = true;
+        console.log(`[Taobao] ✓ Title (playwright): "${title}"`);
+      }
+    }
+  } catch (e) {
+    console.log('[Taobao] Title fill error:', e.message);
+  }
+}
+
+async function fillPrice(page, price, filled) {
+  console.log('[Taobao] Filling price...');
+  try {
+    const priceResult = await page.evaluate(({ priceVal }) => {
+      const inputs = document.querySelectorAll('input');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 20 || r.height < 8) continue;
+        if (r.top < 0 || r.top > 3000) continue;
+        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
+        const parentText = parent?.textContent || '';
+        const isPrice = parentText.includes('一口价') ||
+                        (parentText.includes('元') && !parentText.includes('库存') && parentText.includes('价'));
+        if (isPrice && inp.type !== 'hidden') {
+          inp.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(inp, String(priceVal));
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true };
+        }
+      }
+      return { success: false };
+    }, { priceVal: price });
+
+    if (priceResult.success) { filled.price = true; console.log(`[Taobao] ✓ Price: ${price}`); }
+
+    if (!filled.price) {
+      const allInputs = page.locator('input:visible:not([type="hidden"])');
+      const ic = await allInputs.count();
+      for (let i = 0; i < ic; i++) {
+        const inp = allInputs.nth(i);
+        const parentText = await inp.evaluate(el => {
+          let p = el.parentElement;
+          for (let d = 0; d < 4 && p; d++) {
+            if ((p.textContent || '').includes('一口价')) return p.textContent;
+            p = p.parentElement;
+          }
+          return '';
+        });
+        if (parentText.includes('一口价')) {
+          const box = await inp.boundingBox().catch(() => null);
+          if (box && box.width > 20) {
+            await inp.click();
+            await inp.fill(String(price));
+            filled.price = true;
+            console.log(`[Taobao] ✓ Price (playwright): ${price}`);
+            break;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log('[Taobao] Price fill error:', e.message);
+  }
+}
+
+async function fillStock(page, filled) {
+  console.log('[Taobao] Filling stock...');
+  try {
+    const stockResult = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 20 || r.height < 8) continue;
+        if (r.top < 0 || r.top > 3000) continue;
+        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
+        const parentText = parent?.textContent || '';
+        const isStock = parentText.includes('总库存') || (parentText.includes('库存') && parentText.includes('件'));
+        if (isStock && inp.type !== 'hidden') {
+          inp.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(inp, '9999');
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true };
+        }
+      }
+      return { success: false };
+    });
+    if (stockResult.success) { filled.qty = true; console.log('[Taobao] ✓ Stock: 9999'); }
+  } catch (e) {
+    console.log('[Taobao] Stock fill error:', e.message);
+  }
+}
+
 /**
- * Upload images to Taobao 1:1 main image slots via the iframe-based file selector.
+ * Fill brand field. The brand field on Taobao publish form can be:
+ * - A text input where you type a brand name
+ * - A dropdown/select-like component
+ * Strategy: first try to find an input near "品牌" text, fill "其他".
+ * If that fails, try clicking the label to open a dropdown.
+ */
+async function fillBrand(page, filled) {
+  console.log('[Taobao] Filling brand...');
+  try {
+    // Strategy A: direct input fill
+    const brandResult = await page.evaluate(() => {
+      // Walk every visible input looking for one whose parent text starts with "品牌"
+      const inputs = document.querySelectorAll('input:not([type="hidden"])');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 30 || r.height < 8) continue;
+        if (r.top < 0 || r.top > 5000) continue;
+        // Check parent text up to 4 levels
+        let el = inp;
+        for (let d = 0; d < 5 && el; d++) {
+          const t = (el.textContent || '').trim();
+          if (/^品牌\s*$/.test(t) || (t.includes('品牌') && (t.includes('请输入') || t.includes('选择')))) {
+            inp.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(inp, '其他');
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            inp.dispatchEvent(new Event('blur', { bubbles: true }));
+            return { success: true, method: 'input' };
+          }
+          el = el.parentElement;
+        }
+      }
+      return { success: false };
+    });
+    if (brandResult.success) { filled.brand = true; console.log('[Taobao] ✓ Brand: 其他'); return; }
+
+    // Strategy B: click "品牌" label to open dropdown, then select first option
+    const brandLabel = page.locator(':text-is("品牌")').first();
+    if (await brandLabel.count() > 0) {
+      await brandLabel.click();
+      await page.waitForTimeout(800);
+      // Try to type into whatever appeared
+      const activeEl = page.locator(':focus');
+      if (await activeEl.count() > 0) {
+        await activeEl.fill('其他');
+        await page.keyboard.press('Enter');
+        filled.brand = true;
+        console.log('[Taobao] ✓ Brand (label click + fill)');
+        return;
+      }
+    }
+    console.log('[Taobao] Brand fill failed (may need manual input)');
+  } catch (e) {
+    console.log('[Taobao] Brand fill error:', e.message);
+  }
+}
+
+/**
+ * Fill packaging field. Usually a dropdown or input.
+ * Common values: "袋装", "罐装", "盒装", "散装"
+ */
+async function fillPackaging(page, filled) {
+  console.log('[Taobao] Filling packaging...');
+  const DEFAULT_PACKAGING = '袋装';
+  try {
+    // Strategy A: find input near "包装" text
+    const pkgResult = await page.evaluate(({ pkg }) => {
+      const inputs = document.querySelectorAll('input:not([type="hidden"])');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 30 || r.height < 8) continue;
+        if (r.top < 0 || r.top > 5000) continue;
+        let el = inp;
+        for (let d = 0; d < 5 && el; d++) {
+          const t = (el.textContent || '').trim();
+          if (t.includes('包装') && (t.includes('请') || t.includes('选择') || t.length < 10)) {
+            inp.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(inp, pkg);
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            inp.dispatchEvent(new Event('blur', { bubbles: true }));
+            return { success: true, method: 'input' };
+          }
+          el = el.parentElement;
+        }
+      }
+      return { success: false };
+    }, { pkg: DEFAULT_PACKAGING });
+    if (pkgResult.success) { filled.packaging = true; console.log(`[Taobao] ✓ Packaging: ${DEFAULT_PACKAGING}`); return; }
+
+    // Strategy B: click the label
+    const pkgLabel = page.locator('text="包装"').first();
+    if (await pkgLabel.count() > 0 && await pkgLabel.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await pkgLabel.click();
+      await page.waitForTimeout(600);
+      // Type the value
+      const kb = page.keyboard;
+      await kb.type(DEFAULT_PACKAGING, { delay: 50 });
+      await kb.press('Enter');
+      filled.packaging = true;
+      console.log(`[Taobao] ✓ Packaging (type): ${DEFAULT_PACKAGING}`);
+      return;
+    }
+    console.log('[Taobao] Packaging fill failed');
+  } catch (e) {
+    console.log('[Taobao] Packaging fill error:', e.message);
+  }
+}
+
+/**
+ * Fill origin (产地) field. Usually a dropdown or input.
+ * Default: "中国大陆" or city name.
+ */
+async function fillOrigin(page, filled) {
+  console.log('[Taobao] Filling origin...');
+  const DEFAULT_ORIGIN = '中国大陆';
+  try {
+    // Strategy A: find input near "产地" text
+    const originResult = await page.evaluate(({ origin }) => {
+      const inputs = document.querySelectorAll('input:not([type="hidden"])');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 30 || r.height < 8) continue;
+        if (r.top < 0 || r.top > 5000) continue;
+        let el = inp;
+        for (let d = 0; d < 5 && el; d++) {
+          const t = (el.textContent || '').trim();
+          if ((t.includes('产地') || t.includes('原产地')) && (t.includes('请') || t.includes('选择') || t.length < 12)) {
+            inp.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(inp, origin);
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            inp.dispatchEvent(new Event('blur', { bubbles: true }));
+            return { success: true, method: 'input' };
+          }
+          el = el.parentElement;
+        }
+      }
+      return { success: false };
+    }, { origin: DEFAULT_ORIGIN });
+    if (originResult.success) { filled.origin = true; console.log(`[Taobao] ✓ Origin: ${DEFAULT_ORIGIN}`); return; }
+
+    // Strategy B: click label
+    const originLabel = page.locator('text="产地"').first();
+    if (await originLabel.count() > 0 && await originLabel.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await originLabel.click();
+      await page.waitForTimeout(600);
+      await page.keyboard.type(DEFAULT_ORIGIN, { delay: 50 });
+      await page.keyboard.press('Enter');
+      filled.origin = true;
+      console.log(`[Taobao] ✓ Origin (type): ${DEFAULT_ORIGIN}`);
+      return;
+    }
+    console.log('[Taobao] Origin fill failed');
+  } catch (e) {
+    console.log('[Taobao] Origin fill error:', e.message);
+  }
+}
+
+/**
+ * Fill freight template (运费模板). Usually a dropdown/select.
+ * Default: try "包邮" or "运费模板" click.
+ */
+async function fillFreight(page, filled) {
+  console.log('[Taobao] Filling freight template...');
+  try {
+    // Strategy A: look for "运费模板" or "运费" text, click to open selector
+    const freightLabels = ['运费模板', '运费', '物流'];
+    for (const label of freightLabels) {
+      const el = page.locator(`text="${label}"`).first();
+      if (await el.count() > 0 && await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+        // Click the label or its parent to open dropdown
+        await el.click();
+        await page.waitForTimeout(800);
+
+        // Look for dropdown options
+        const options = page.locator('[class*="option"], [class*="item"], [class*="menu-item"], li, .select-item');
+        const optCount = await options.count();
+        if (optCount > 0) {
+          await options.first().click();
+          await page.waitForTimeout(500);
+          filled.freight = true;
+          console.log('[Taobao] ✓ Freight template selected');
+          return;
+        }
+
+        // If no dropdown appeared, try typing "包邮"
+        await page.keyboard.type('包邮', { delay: 50 });
+        await page.keyboard.press('Enter');
+        filled.freight = true;
+        console.log('[Taobao] ✓ Freight (typed): 包邮');
+        return;
+      }
+    }
+    console.log('[Taobao] Freight fill failed');
+  } catch (e) {
+    console.log('[Taobao] Freight fill error:', e.message);
+  }
+}
+
+async function fillDescription(page, desc, filled) {
+  console.log('[Taobao] Filling description...');
+  try {
+    const descResult = await page.evaluate(({ descText }) => {
+      const all = document.querySelectorAll('*');
+      for (const el of all) {
+        const txt = (el.textContent || '').trim();
+        if (txt === '宝贝详情' || txt === '宝贝详情*') {
+          let container = el.parentElement;
+          for (let d = 0; d < 10 && container; d++) {
+            const editors = container.querySelectorAll('[contenteditable="true"], .ql-editor, [class*="editor"], [class*="Editor"]');
+            for (const ed of editors) {
+              const r = ed.getBoundingClientRect();
+              if (r.width > 100 && r.height > 50) {
+                ed.focus();
+                ed.innerHTML = `<p>${descText}</p>`;
+                ed.dispatchEvent(new Event('input', { bubbles: true }));
+                return true;
+              }
+            }
+            const tas = container.querySelectorAll('textarea');
+            for (const ta of tas) {
+              const r = ta.getBoundingClientRect();
+              if (r.width > 100 && r.height > 50) {
+                ta.focus();
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(ta, descText);
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                return true;
+              }
+            }
+            container = container.parentElement;
+          }
+        }
+      }
+      return false;
+    }, { descText: desc });
+
+    filled.desc = descResult;
+    if (descResult) console.log('[Taobao] ✓ Description filled');
+  } catch (e) {
+    console.log('[Taobao] Description fill error:', e.message);
+  }
+}
+
+// ============================================================
+// Image upload
+// ============================================================
+/**
  *
  * BREAKTHROUGH (2026-06-13): The previous 7 strategies all failed because
  * they searched for file inputs in the main page DOM. Taobao's image upload
@@ -742,6 +900,24 @@ function parseImages(imagesField) {
 // ============================================================
 async function submitAndVerify(page) {
   console.log('[Taobao] Attempting submit...');
+
+  // First, wait for any visible form validation errors to settle
+  await page.waitForTimeout(2000);
+
+  // Check if form has unfilled required fields before submitting
+  const preCheck = await page.evaluate(() => {
+    const body = document.body?.innerText || '';
+    const errorTexts = ['请填写', '请选择', '不能为空', '必填', '请正确填写'];
+    const found = [];
+    for (const t of errorTexts) {
+      const m = body.match(new RegExp(`[^。\\n]{0,50}${t}[^。\\n]{0,50}`, 'gi'));
+      if (m) found.push(...m.slice(0, 2));
+    }
+    return found;
+  });
+  if (preCheck.length > 0) {
+    console.log('[Taobao] ⚠ Pre-submit validation errors detected:', JSON.stringify(preCheck));
+  }
 
   // Find and click submit button
   const submitTexts = ['提交宝贝信息', '提交宝贝', '立刻上架', '放入仓库', '发布'];
