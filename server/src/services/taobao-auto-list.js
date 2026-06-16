@@ -121,6 +121,39 @@ async function searchAndSelectCategory(page, cat) {
   console.log(`[Taobao] Searching category: "${cat}"`);
   await page.screenshot({ path: join(SCREENSHOT_DIR, `cat_entry_${Date.now()}.png`), fullPage: false });
 
+
+  // Step 0: First try the "推荐发品" tab — click a recommended category matching our keyword
+  console.log('[Taobao] Trying recommended tab first...');
+  try {
+    const recTab = page.getByText('推荐发品');
+    if (await recTab.count() > 0 && await recTab.first().isVisible().catch(() => false)) {
+      console.log('[Taobao] Found "推荐发品" tab, looking for matching category...');
+      const recItems = page.locator('[class*="category-item"], [class*="tag"], [class*="recommend"], [class*="card"], a, button').filter({ hasText: cat });
+      const recCount = await recItems.count();
+      if (recCount > 0) {
+        for (let i = 0; i < Math.min(recCount, 20); i++) {
+          const txt = await recItems.nth(i).textContent().catch(() => '');
+          if (txt && txt.trim().includes(cat)) {
+            console.log(`[Taobao] Clicking recommended category: "${txt.trim()}"`);
+            await recItems.nth(i).click();
+            await page.waitForTimeout(2000);
+            const url = page.url();
+            if (url.includes('publish') && !url.includes('category')) {
+              console.log('[Taobao] Redirected to publish page via recommended category!');
+              return true;
+            }
+            break;
+          }
+        }
+      } else {
+        console.log('[Taobao] No matching recommended category found, falling back to search tab');
+      }
+    } else {
+      console.log('[Taobao] "推荐发品" tab not found or not visible');
+    }
+  } catch (e) {
+    console.log('[Taobao] Recommended tab attempt error:', e.message);
+  }
   // Step 1: Click "搜索发品" tab
   console.log('[Taobao] Clicking search tab...');
   try {
