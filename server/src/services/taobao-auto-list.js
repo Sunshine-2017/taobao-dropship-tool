@@ -361,7 +361,26 @@ async function fillForm(page, title, price, desc, product) {
 async function fillTitle(page, title, filled) {
   console.log('[Taobao] Filling title...');
   try {
+    // Diagnostic: title is INPUT (w=668, placeholder="最多允许输入60个汉字（60字符）")
+    // NOT a textarea. Also try textarea fallback.
     const titleResult = await page.evaluate(({ titleText }) => {
+      // Strategy A: Look for input with 60-char placeholder
+      const inputs = document.querySelectorAll('input:not([type="hidden"])');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width < 200 || r.height < 10) continue;
+        const ph = (inp.placeholder || '');
+        if (ph.includes('60个汉字') || ph.includes('60字符') || ph.includes('最多允许输入')) {
+          inp.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(inp, titleText);
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, method: 'input-placeholder' };
+        }
+      }
+
+      // Strategy B: Look for textarea (old form layout)
       const textareas = document.querySelectorAll('textarea');
       for (const ta of textareas) {
         const r = ta.getBoundingClientRect();
@@ -370,30 +389,16 @@ async function fillTitle(page, title, filled) {
         const parent = ta.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || ta.parentElement?.parentElement;
         const parentText = parent?.textContent || '';
         const maxLength = ta.getAttribute('maxlength');
-        const isTitle = parentText.includes('宝贝标题') ||
-                        parentText.includes('标题') && parentText.includes('60') ||
-                        (maxLength === '60') ||
-                        (ta.placeholder && ta.placeholder.includes('标题'));
-        if (isTitle) {
+        if (parentText.includes('宝贝标题') ||
+            (parentText.includes('标题') && parentText.includes('60')) ||
+            (maxLength === '60') ||
+            (ta.placeholder && ta.placeholder.includes('标题'))) {
           ta.focus();
           const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
           setter.call(ta, titleText);
           ta.dispatchEvent(new Event('input', { bubbles: true }));
           ta.dispatchEvent(new Event('change', { bubbles: true }));
-          setter.call(ta, titleText);
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          return { success: true, method: 'textarea-evaluate' };
-        }
-      }
-      for (const ta of textareas) {
-        const r = ta.getBoundingClientRect();
-        if (r.width > 300 && r.height > 20 && r.height < 200) {
-          ta.focus();
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-          setter.call(ta, titleText);
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true, method: 'textarea-fallback' };
+          return { success: true, method: 'textarea-evertit' };
         }
       }
       return { success: false, count: textareas.length };
@@ -402,12 +407,15 @@ async function fillTitle(page, title, filled) {
     if (titleResult.success) {
       filled.title = true;
       console.log(`[Taobao] ✓ Title: "${title}" (${titleResult.method})`);
+      return;
     }
+
+    // Playwright fallback: find input with 60-char placeholder
     if (!filled.title) {
-      const ta = page.locator('textarea:visible').first();
-      if (await ta.count() > 0) {
-        await ta.click();
-        await ta.fill(title);
+      const titleInput = page.locator('input[placeholder*="60个汉字"], input[placeholder*="60字符"], textarea:visible').first();
+      if (await titleInput.count() > 0) {
+        await titleInput.click();
+        await titleInput.fill(title);
         filled.title = true;
         console.log(`[Taobao] ✓ Title (playwright): "${title}"`);
       }
