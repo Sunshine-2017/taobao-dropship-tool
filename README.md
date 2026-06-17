@@ -308,3 +308,51 @@ cd server && node dist/index.js
 ## 最终目标
 
 访问 `http://127.0.0.1:8765/`（或 `localhost:5173`）→ 在 Web 页面点几下 → 商品自动上架到淘宝。目前完成度约 70%，阻塞点在首次登录和类目选择。
+
+---
+
+## 备用方案：千牛客户端 + UIA 桌面自动化
+
+如果 Playwright 浏览器路径一直卡在登录或类目选择上，可以换这条路径：**直接操控千牛 PC 客户端**来发布商品，而不是通过浏览器打开网页版。
+
+### 为什么走这条路
+
+千牛 PC 客户端你已经安装并登录了。通过 Windows UI Automation (UIA) 直接操作客户端界面：
+
+1. 千牛客户端始终保持登录态（你日常使用就是登录的）
+2. 通过 UIA 直接点击"发布商品"按钮
+3. 不需要 Playwright 的独立 Chromium 登录问题
+
+### 候选工具
+
+| 项目 | 语言 | 特点 |
+|------|------|------|
+| [PeekabooWin](https://github.com/wangneal/PeekabooWin) | Python | 中文、UIA + SendInput + OCR，适合直接接入 |
+| [iris-mcp](https://github.com/SSCanine/iris-mcp) | Python | 高精度，Win32 + UIA + OCR 三重渲染 |
+| [civyk-winwright](https://github.com/civyk-official/civyk-winwright) | PowerShell | Playwright 风格 API，59+ 工具 |
+
+### 推荐：PeekabooWin
+
+- 有完整中文文档，学习成本低
+- 支持元素发现、输入模拟、截图、窗口管理、剪贴板、OCR 识别
+- 可以通过 MCP 协议集成到项目
+
+### 集成方式
+
+```
+taobao-auto-list.js  →  PeekabooWin MCP  →  千牛 PC 客户端
+(Node.js)               (Python + UIA)      (已登录)
+```
+
+Node.js 后端通过 MCP 协议调用 PeekabooWin 的工具，PeekabooWin 通过 Windows UIA 操作千牛客户端界面。
+
+### 适用场景
+
+- Playwright 的独立 Chromium 登录 cookie 始终无法持久化时
+- 淘宝 AI 类目页 DOM 频繁变化导致选择器失效时
+- 图片上传 iframe 黑盒无法突破时
+- 需要更高的稳定性和可靠性时
+
+### 依赖
+
+PeekabooWin 基于 Python，需要安装 Python 3.10+ 和项目依赖。具体安装步骤见项目文档。Scrapling 等 Web 抓取工具如果需要（如绕过 1688 搜索的 Cloudflare 反爬），也可以配合使用。
