@@ -1207,7 +1207,7 @@ async function submitAndVerify(page) {
 // ============================================================
 // Main batch listing orchestrator
 // ============================================================
-export async function batchListToTaobao(products, overrideCategory) {
+export async function batchListToTaobao(products, overrideCategory, overridePrices) {
   console.log(`[Taobao] Starting batch listing ${products.length} products...`);
 
   const context = await launchContext();
@@ -1250,7 +1250,8 @@ export async function batchListToTaobao(products, overrideCategory) {
   for (let i = 0; i < products.length; i++) {
     const p = products[i];
     const title = p.title || '';
-    const price = p.selling_price || p.cost_price || 0;
+    // Use user-specified price if provided, otherwise fall back to product's selling_price or cost_price
+    const price = (overridePrices && overridePrices[p.id]) || p.selling_price || p.cost_price || 0;
     // If overrideCategory contains a path like "茶>代用/花草/水果/再加工茶>组合型花茶", extract the last segment
     let cat = overrideCategory || resolveCategory(p);
     if (cat.includes('>')) {

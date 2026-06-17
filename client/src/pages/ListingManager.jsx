@@ -39,22 +39,32 @@ export default function ListingManager() {
   // === Auto-list to Taobao (browser automation) ===
   const [autoListModal, setAutoListModal] = useState(null);
   const [autoListCategory, setAutoListCategory] = useState('');
+  const [autoListPrices, setAutoListPrices] = useState({});
 
   const handleAutoList = async (productIds) => {
-    // Show a modal asking for category first
     setAutoListModal(productIds);
-    // Pre-fill from first product's category
     const firstProduct = allProducts.find(p => productIds.includes(p.id));
     setAutoListCategory(firstProduct?.category || '');
+    // Init prices with products' current selling_price
+    const prices = {};
+    for (const pid of productIds) {
+      const p = allProducts.find(x => x.id === pid);
+      prices[pid] = p?.selling_price || '';
+    }
+    setAutoListPrices(prices);
   };
 
   const confirmAutoList = async () => {
     const productIds = autoListModal;
     if (!productIds || productIds.length === 0) return;
+    const prices = {};
+    for (const pid of productIds) {
+      if (autoListPrices[pid]) prices[pid] = Number(autoListPrices[pid]);
+    }
     setAutoListModal(null);
     setAutoListing(true);
     try {
-      const { data } = await autoListTaobao({ productIds, category: autoListCategory });
+      const { data } = await autoListTaobao({ productIds, category: autoListCategory, prices });
       setSelectedRowKeys([]);
 
       const results = data.results || [];
@@ -305,29 +315,59 @@ export default function ListingManager() {
         )}
       </Modal>
 
-      {/* Category input modal for auto-list */}
+      {/* Category + Pricing modal for auto-list */}
       <Modal
-        title="设置上架类目"
+        title="上架设置"
         open={!!autoListModal}
         onOk={confirmAutoList}
         onCancel={() => setAutoListModal(null)}
         okText="开始上架"
         cancelText="取消"
         confirmLoading={autoListing}
+        width={560}
       >
         <div>
           <p>即将为 <strong>{autoListModal?.length || 0}</strong> 件商品自动上架到淘宝</p>
-          <div style={{ marginTop: 16 }}>
+          <div style={{ marginTop: 16, marginBottom: 16 }}>
             <p style={{ marginBottom: 4, fontWeight: 500 }}>淘宝类目（必填）</p>
             <Input
               value={autoListCategory}
               onChange={e => setAutoListCategory(e.target.value)}
-              placeholder="例如：组合型花茶、代用/花草茶、中药材/中药饮片"
+              placeholder="例如：茶>代用/花草/水果/再加工茶>组合型花茶"
               style={{ width: '100%' }}
             />
-            <p style={{ color: '#999', fontSize: 12, marginTop: 4 }}>精确填写类目关键词，用于在淘宝类目系统中搜索匹配</p>
+            <p style={{ color: '#999', fontSize: 12, marginTop: 4 }}>填完整路径或叶子类目名均可</p>
           </div>
-          <p style={{ color: '#999', fontSize: 12, marginTop: 12 }}>
+
+          {/* Per-product pricing */}
+          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginBottom: 8 }}>
+            <p style={{ fontWeight: 500, marginBottom: 8 }}>设置售价</p>
+            {autoListModal && autoListModal.map(pid => {
+              const p = allProducts.find(x => x.id === pid);
+              if (!p) return null;
+              const cost = p.cost_price || 0;
+              return (
+                <div key={pid} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {p.title}
+                  </span>
+                  <span style={{ color: '#999', fontSize: 12, whiteSpace: 'nowrap' }}>成本 ¥{cost}</span>
+                  <Input
+                    value={autoListPrices[pid] ?? ''}
+                    onChange={e => setAutoListPrices(prev => ({ ...prev, [pid]: e.target.value }))}
+                    placeholder="售价"
+                    style={{ width: 100 }}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    prefix="¥"
+                  />
+                </div>
+              );
+            })}
+          </div>
+
+          <p style={{ color: '#999', fontSize: 12 }}>
             系统将自动打开浏览器，扫码登录淘宝后自动填表上架
           </p>
         </div>

@@ -122,7 +122,7 @@ router.get('/auto-list-status', async (_req, res) => {
 // ── Auto-list to Taobao ──────────────────────────────────────────
 router.post('/auto-list', async (req, res) => {
     const d = getDb();
-    const { productIds, category } = req.body;
+    const { productIds, category, prices } = req.body;
     if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
         return res.status(400).json({ error: '请选择要上架的商品' });
     }
@@ -136,7 +136,7 @@ router.post('/auto-list', async (req, res) => {
     if (products.length === 0)
         return res.status(400).json({ error: '未找到有效商品' });
     try {
-        const result = await batchListToTaobao(products, category);
+        const result = await batchListToTaobao(products, category, prices);
         const insertStmt = d.prepare("INSERT INTO listings (product_id, taobao_item_id, status, csv_path, listed_at, created_at) VALUES (?, ?, ?, NULL, ?, datetime('now'))");
         const updateStmt = d.prepare(`UPDATE my_products SET status = ?, updated_at = datetime('now') WHERE id = ?`);
         const tx = d.transaction(() => {
