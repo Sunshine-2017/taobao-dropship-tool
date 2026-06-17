@@ -59,6 +59,41 @@
 
 ---
 
+## 上架方案说明
+
+### 主方案：Playwright 浏览器自动化（当前路径）
+
+程序启动 Playwright 内置的 Chromium（不是你日常用的 Chrome），打开淘宝千牛网页版发布商品。**登录态通过 Chrome User Data Dir 持久化**，只需首次扫码，之后自动复用。
+
+适合：你有千牛网页版访问权限、愿意首次扫码
+优点：不依赖桌面客户端、跨平台
+瓶颈：类目选择依赖淘宝 AI 类目页的搜索功能，匹配精度有上限
+
+### 备用方案：千牛 PC 客户端 + Windows UIA
+
+**前提：你已经安装了千牛 PC 客户端。**
+
+如果 Playwright 浏览器路径一直卡在登录或类目选择上，可以换这条路径：直接操控千牛 PC 客户端来发布商品，而不是通过浏览器打开网页版。
+
+需要的技术：
+- [Wangneal/PeekabooWin](https://github.com/wangneal/PeekabooWin) — Windows UIA + OCR 桌面自动化 MCP 服务器（Python，中文文档完整）
+- 或 [SSCanine/iris-mcp](https://github.com/SSCanine/iris-mcp) — 高精度 Windows 桌面控制，Win32 + UIA + OCR 三重渲染后端
+
+这套方案通过 **Windows UI Automation (UIA)** 识别千牛客户端的按钮、输入框、下拉菜单等界面元素，配合 **OCR** 识别页面上的文字。不需要浏览器 cookie，不需要处理网页登录态。
+
+**相比主方案的优劣势：**
+
+| 对比 | 浏览器 Playwright | 千牛客户端 UIA |
+|------|------------------|---------------|
+| 登录 | 需扫码一次，cookie 持久化 | 千牛客户端已登录，直接可用 |
+| 类目选择 | 在网页 AI 类目页搜索匹配 | 千牛客户端的类目树直接点击 |
+| 稳定性 | 淘宝网页可能改版导致选择器失效 | 客户端 UI 相对稳定 |
+| 跨平台 | Windows/Mac/Linux | 仅 Windows |
+| 图片上传 | 通过 sucai-selector iframe 自动上传 | 千牛客户端有文件选择器 |
+| 实施成本 | 已实现 80% | 需要从零开发 |
+
+---
+
 ## 快速启动
 
 ---
