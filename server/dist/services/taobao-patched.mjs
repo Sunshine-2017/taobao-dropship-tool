@@ -1,3 +1,4 @@
+export {};
 /**
  * Taobao auto-listing service via Playwright
  *
@@ -244,7 +245,6 @@ async function searchAndSelectCategory(page, cat) {
       await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
       return false;
     }
-  }
   // Step 3: Click the first matching category result
   try {
     const results = page.locator('.sell-rich-text.path-text:not(.readonly), [class*="category-item"], [class*="result-item"]');
@@ -1227,7 +1227,8 @@ async function submitAndVerify(page) {
 // ============================================================
 // Main batch listing orchestrator
 // ============================================================
-export async function batchListToTaobao(products, overrideCategory, overridePrices) {
+
+async function batchListToTaobao(products, overrideCategory, overridePrices) {
   console.log(`[Taobao] Starting batch listing ${products.length} products...`);
 
   const context = await launchContext();
@@ -1373,3 +1374,6 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
     results,
   };
 }
+
+
+export { batchListToTaobao };

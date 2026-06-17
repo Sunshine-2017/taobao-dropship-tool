@@ -66,9 +66,14 @@ async function launchContext() {
     try { rmSync(join(USER_DATA_DIR, lock), { recursive: true, force: true }); } catch {}
   }
 
-  console.log('[Taobao] Launching browser (Playwright Chromium)...');
+  // Use system browser channel (chrome/msedge) to reuse login cookies
+  // Set env BROWSER_CHANNEL=msedge to use Edge, BROWSER_CHANNEL=chrome for Chrome
+  // Set USE_CHROME_CHANNEL=false to use Playwright's built-in Chromium
+  const browserChannel = process.env.BROWSER_CHANNEL || 
+    (process.env.USE_CHROME_CHANNEL !== 'false' ? 'chrome' : null);
+  console.log('[Taobao] Launching browser (channel: ' + (browserChannel || 'chromium') + ')...');
 
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+  const launchOpts = {
     headless: false,
     viewport: { width: 1280, height: 900 },
     locale: 'zh-CN',
@@ -81,7 +86,12 @@ async function launchContext() {
       '--disable-gpu-sandbox',
       '--start-maximized',
     ],
-  });
+  };
+  if (browserChannel) {
+    launchOpts.channel = browserChannel;
+  }
+
+  const context = await chromium.launchPersistentContext(USER_DATA_DIR, launchOpts);
 
   console.log('[Taobao] Browser launched successfully');
   return context;
@@ -211,22 +221,30 @@ async function searchAndSelectCategory(page, cat) {
   }
 
   // Step 2: Find and fill search input
-  const searchInput = page.locator('input[placeholder*="类目"], input[placeholder*="关键词"], input[placeholder*="搜索"]').first();
+  const searchInput = page.locator([
+    'input[placeholder*="类目"]',
+    'input[placeholder*="关键词"]', 
+    'input[placeholder*="搜索"]',
+    'input[placeholder*="商品名称"]',
+    'div[contenteditable="true"][placeholder*="类目"]',
+    '[class*="search"] input',
+  ].join(',')).first();
   if (await searchInput.count() === 0) {
     console.log('[Taobao] Search input not found, trying fallback...');
-    await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
-    return false;
+    // Fallback: try any visible input on page
+    const fallbackSearch = page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):visible').first();
+    if (await fallbackSearch.count() > 0) {
+      console.log('[Taobao] ✓ Fallback input found, using it');
+      await fallbackSearch.click();
+      await fallbackSearch.fill(cat);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(3000);
+    } else {
+      console.log('[Taobao] ⛔ No visible fallback input found');
+      await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
+      return false;
+    }
   }
-
-  console.log('[Taobao] Typing category keyword...');
-  await searchInput.click();
-  await searchInput.fill(cat);
-  await page.waitForTimeout(300);
-  await page.keyboard.press('Enter');
-  console.log('[Taobao] Search submitted');
-  await page.waitForTimeout(3000);
-  await page.screenshot({ path: join(SCREENSHOT_DIR, `after_cat_search_${Date.now()}.png`), fullPage: false });
-
   // Step 3: Click the first matching category result
   try {
     const results = page.locator('.sell-rich-text.path-text:not(.readonly), [class*="category-item"], [class*="result-item"]');
@@ -272,6 +290,8 @@ async function searchAndSelectCategory(page, cat) {
     if (!target) {
       console.log(`[Taobao] ⚠ No good match found for "${cat}" among ${count} results. Picking first result.`);
       target = results.first();
+    }
+
 
     if (!target) target = results.first();
 
@@ -1342,6 +1362,7 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
       console.log('[Taobao] Waiting 5s before next...');
       await page.waitForTimeout(5000);
     }
+
   }
 
   const successCount = results.filter(r => r.success).length;

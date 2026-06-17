@@ -13,12 +13,12 @@
  * - submitAndVerify(): click submit and check success
  * - batchListToTaobao(): orchestrates the full flow
  */
-import { chromium } from 'playwright';
-import { join, resolve } from 'path';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+const { chromium } = require("playwright");
+const { join, resolve } = require("path");
+const { existsSync, mkdirSync, rmSync, writeFileSync } = require("fs");
 
 // Use absolute paths to avoid cwd issues
-const PROJECT_ROOT = resolve(join(import.meta.url.replace('file:///', ''), '..', '..', '..'));
+const PROJECT_ROOT = resolve(join(__filename.replace('file:///', ''), '..', '..', '..'));
 const USER_DATA_DIR = process.env.TAOBAO_PROFILE_DIR || join(PROJECT_ROOT, 'data', 'taobao-profile');
 const SCREENSHOT_DIR = join(PROJECT_ROOT, 'data', 'screenshots');
 const LOG_DIR = join(PROJECT_ROOT, 'data', 'logs');
@@ -244,7 +244,6 @@ async function searchAndSelectCategory(page, cat) {
       await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
       return false;
     }
-  }
   // Step 3: Click the first matching category result
   try {
     const results = page.locator('.sell-rich-text.path-text:not(.readonly), [class*="category-item"], [class*="result-item"]');
@@ -1227,7 +1226,7 @@ async function submitAndVerify(page) {
 // ============================================================
 // Main batch listing orchestrator
 // ============================================================
-export async function batchListToTaobao(products, overrideCategory, overridePrices) {
+async function batchListToTaobao(products, overrideCategory, overridePrices) {
   console.log(`[Taobao] Starting batch listing ${products.length} products...`);
 
   const context = await launchContext();
@@ -1373,3 +1372,6 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
     results,
   };
 }
+
+
+module.exports = { batchListToTaobao };

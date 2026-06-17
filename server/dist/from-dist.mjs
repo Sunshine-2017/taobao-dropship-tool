@@ -244,7 +244,6 @@ async function searchAndSelectCategory(page, cat) {
       await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
       return false;
     }
-  }
   // Step 3: Click the first matching category result
   try {
     const results = page.locator('.sell-rich-text.path-text:not(.readonly), [class*="category-item"], [class*="result-item"]');
@@ -1362,7 +1361,6 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
       console.log('[Taobao] Waiting 5s before next...');
       await page.waitForTimeout(5000);
     }
-
   }
 
   const successCount = results.filter(r => r.success).length;
