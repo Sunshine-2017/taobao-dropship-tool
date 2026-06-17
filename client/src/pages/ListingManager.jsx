@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Button, Tag, Space, message, Card, Statistic, Row, Col, Modal, Descriptions, Popconfirm, Empty, Alert } from 'antd';
+import { Table, Button, Tag, Space, message, Card, Statistic, Row, Col, Modal, Descriptions, Popconfirm, Empty, Alert, Input, Form } from 'antd';
 import {
   DownloadOutlined, CheckCircleOutlined, EyeOutlined, DeleteOutlined,
   RocketOutlined, ImportOutlined, ThunderboltOutlined,
@@ -37,56 +37,49 @@ export default function ListingManager() {
   const unlistedProducts = allProducts.filter(p => p.status !== 'listed');
 
   // === Auto-list to Taobao (browser automation) ===
+  const [autoListModal, setAutoListModal] = useState(null);
+  const [autoListCategory, setAutoListCategory] = useState('');
+
   const handleAutoList = async (productIds) => {
-    Modal.confirm({
-      title: '确认自动上架',
-      icon: <RocketOutlined />,
-      content: (
-        <div>
-          <p>即将为 <strong>{productIds.length}</strong> 件商品自动上架到淘宝</p>
-          <p style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
-            系统将自动打开浏览器，请确保：
-          </p>
-          <ul style={{ color: '#999', fontSize: 12, paddingLeft: 20 }}>
-            <li>已安装 Chrome 浏览器</li>
-            <li>准备好在浏览器中登录淘宝（如需要扫码）</li>
-            <li>图片需要在浏览器中手动上传</li>
-          </ul>
-        </div>
-      ),
-      okText: '开始上架',
-      cancelText: '取消',
-      onOk: async () => {
-        setAutoListing(true);
-        try {
-          const { data } = await autoListTaobao({ productIds });
-          setSelectedRowKeys([]);
+    // Show a modal asking for category first
+    setAutoListModal(productIds);
+    // Pre-fill from first product's category
+    const firstProduct = allProducts.find(p => productIds.includes(p.id));
+    setAutoListCategory(firstProduct?.category || '');
+  };
 
-          const results = data.results || [];
-          const successCount = results.filter(r => r.success).length;
-          const failCount = results.filter(r => !r.success).length;
+  const confirmAutoList = async () => {
+    const productIds = autoListModal;
+    if (!productIds || productIds.length === 0) return;
+    setAutoListModal(null);
+    setAutoListing(true);
+    try {
+      const { data } = await autoListTaobao({ productIds, category: autoListCategory });
+      setSelectedRowKeys([]);
 
-          if (successCount > 0 && failCount === 0) {
-            message.success(`全部 ${successCount} 件商品上架成功！`);
-          } else if (successCount > 0) {
-            Modal.warning({
-              title: '部分上架成功',
-              content: `${successCount} 件成功，${failCount} 件失败。失败原因：${results.filter(r => !r.success).map(r => r.message).slice(0, 3).join('；')}`,
-            });
-          } else {
-            Modal.error({
-              title: '上架失败',
-              content: results[0]?.message || '未知错误，请检查浏览器状态',
-            });
-          }
+      const results = data.results || [];
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
 
-          fetchData();
-        } catch (err) {
-          message.error('启动失败: ' + (err.response?.data?.message || err.message));
-        }
-        setAutoListing(false);
-      },
-    });
+      if (successCount > 0 && failCount === 0) {
+        message.success(`全部 ${successCount} 件商品上架成功！`);
+      } else if (successCount > 0) {
+        Modal.warning({
+          title: '部分上架成功',
+          content: `${successCount} 件成功，${failCount} 件失败。失败原因：${results.filter(r => !r.success).map(r => r.message).slice(0, 3).join('；')}`,
+        });
+      } else {
+        Modal.error({
+          title: '上架失败',
+          content: results[0]?.message || '未知错误，请检查浏览器状态',
+        });
+      }
+
+      fetchData();
+    } catch (err) {
+      message.error('启动失败: ' + (err.response?.data?.message || err.message));
+    }
+    setAutoListing(false);
   };
 
   // === CSV flow ===
@@ -310,6 +303,34 @@ export default function ListingManager() {
             </Card>
           </div>
         )}
+      </Modal>
+
+      {/* Category input modal for auto-list */}
+      <Modal
+        title="设置上架类目"
+        open={!!autoListModal}
+        onOk={confirmAutoList}
+        onCancel={() => setAutoListModal(null)}
+        okText="开始上架"
+        cancelText="取消"
+        confirmLoading={autoListing}
+      >
+        <div>
+          <p>即将为 <strong>{autoListModal?.length || 0}</strong> 件商品自动上架到淘宝</p>
+          <div style={{ marginTop: 16 }}>
+            <p style={{ marginBottom: 4, fontWeight: 500 }}>淘宝类目（必填）</p>
+            <Input
+              value={autoListCategory}
+              onChange={e => setAutoListCategory(e.target.value)}
+              placeholder="例如：组合型花茶、代用/花草茶、中药材/中药饮片"
+              style={{ width: '100%' }}
+            />
+            <p style={{ color: '#999', fontSize: 12, marginTop: 4 }}>精确填写类目关键词，用于在淘宝类目系统中搜索匹配</p>
+          </div>
+          <p style={{ color: '#999', fontSize: 12, marginTop: 12 }}>
+            系统将自动打开浏览器，扫码登录淘宝后自动填表上架
+          </p>
+        </div>
       </Modal>
     </div>
   );

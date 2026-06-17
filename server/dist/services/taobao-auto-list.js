@@ -154,7 +154,6 @@ async function searchAndSelectCategory(page, cat) {
   // Also check: does the page body have actual category content?
   const hasContent = await page.evaluate(() => {
     const body = document.body?.innerText || '';
-    // Category page should have "搜索发品" or "以图发品" or "推荐发品"
     return body.includes('搜索发品') || body.includes('以图发品') || body.includes('推荐发品') || body.includes('类目');
   });
   if (!hasContent) {
@@ -198,6 +197,7 @@ async function searchAndSelectCategory(page, cat) {
   } catch (e) {
     console.log('[Taobao] Recommended tab attempt error:', e.message);
   }
+
   // Step 1: Click "搜索发品" tab
   console.log('[Taobao] Clicking search tab...');
   try {
