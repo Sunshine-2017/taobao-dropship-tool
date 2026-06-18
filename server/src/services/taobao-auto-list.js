@@ -69,8 +69,7 @@ async function launchContext() {
   // Use system browser channel (chrome/msedge) to reuse login cookies
   // Set env BROWSER_CHANNEL=msedge to use Edge, BROWSER_CHANNEL=chrome for Chrome
   // Set USE_CHROME_CHANNEL=false to use Playwright's built-in Chromium
-  const browserChannel = process.env.BROWSER_CHANNEL || 
-    (process.env.USE_CHROME_CHANNEL !== 'false' ? 'chrome' : null);
+  const browserChannel = process.env.BROWSER_CHANNEL || 'msedge';
   console.log('[Taobao] Launching browser (channel: ' + (browserChannel || 'chromium') + ')...');
 
   const launchOpts = {
@@ -109,7 +108,7 @@ function resolveCategory(product) {
   // These must be precise enough to find the correct Taobao category leaf
   // The Taobao AI search uses keyword matching, so use specific subcategory names
   const categoryMap = [
-    { keywords: ['花茶', '菊花', '玫瑰', '茉莉', '桂花', '洛神', '花草', '金丝皇菊'], category: '组合型花茶' },
+    { keywords: ['花茶', '菊花', '玫瑰', '茉莉', '桂花', '洛神', '花草', '金丝皇菊'], category: '花茶' },
     { keywords: ['枸杞', '黄芪', '三七', '灵芝', '石斛', '人参', '当归', '党参'], category: '药食同源' },
     { keywords: ['红枣', '银耳', '燕窝', '阿胶', '鹿茸'], category: '滋补品' },
     { keywords: ['红茶', '绿茶', '铁观音', '普洱', '龙井', '乌龙', '白茶'], category: '茶叶' },
@@ -215,39 +214,66 @@ async function searchAndSelectCategory(page, cat) {
     if (await tab.count() > 0) {
       await tab.first().click();
       await page.waitForTimeout(800);
+    } else {
+      console.log('[Taobao] "搜索发品" tab not found');
+      await logStep(page, 'no-search-tab', 'debug', { body: await page.evaluate(() => document.body?.innerText?.substring(0,200) || '') });
     }
   } catch (e) {
     console.log('[Taobao] Search tab click error:', e.message);
   }
 
   // Step 2: Find and fill search input
+  await page.waitForTimeout(1000);
   const searchInput = page.locator([
     'input[placeholder*="类目"]',
-    'input[placeholder*="关键词"]', 
+    'input[placeholder*="关键词"]',
     'input[placeholder*="搜索"]',
-    'input[placeholder*="商品名称"]',
-    'div[contenteditable="true"][placeholder*="类目"]',
-    '[class*="search"] input',
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):visible',
   ].join(',')).first();
   if (await searchInput.count() === 0) {
-    console.log('[Taobao] Search input not found, trying fallback...');
-    // Fallback: try any visible input on page
-    const fallbackSearch = page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):visible').first();
-    if (await fallbackSearch.count() > 0) {
-      console.log('[Taobao] ✓ Fallback input found, using it');
-      await fallbackSearch.click();
-      await fallbackSearch.fill(cat);
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(3000);
-    } else {
-      console.log('[Taobao] ⛔ No visible fallback input found');
-      await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
-      return false;
-    }
+    console.log('[Taobao] ⛔ No input found on page. Dumping body...');
+    const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 500) || '(empty body)');
+    console.log('[Taobao] Body:', bodyText);
+    await page.screenshot({ path: join(SCREENSHOT_DIR, "no_cat_input.png"), fullPage: true });
+    return false;
   }
+  console.log('[Taobao] Typing category keyword: "' + cat + '"');
+  await searchInput.click();
+  await searchInput.fill(cat);
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Enter');
+  console.log('[Taobao] Search submitted, waiting 4s for results...');
+  await page.waitForTimeout(4000);
+
+  // Log page items after search
+  try {
+    const pageItems = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('.sell-rich-text.path-text, [class*="category"], [class*="result"], a, li, td, span'))
+        .slice(0, 20)
+        .map(el => (el.textContent || '').trim())
+        .filter(t => t.length > 0 && t.length < 100)
+        .slice(0, 15);
+    });
+    if (pageItems.length > 0) console.log('[Taobao] Items on page:', JSON.stringify(pageItems));
+    else console.log('[Taobao] No text items found on page');
+  } catch(e) { console.log('[Taobao] Page eval error:', e.message); }
+  await page.screenshot({ path: join(SCREENSHOT_DIR, `after_cat_search_${Date.now()}.png`), fullPage: false });
+
   // Step 3: Click the first matching category result
   try {
-    const results = page.locator('.sell-rich-text.path-text:not(.readonly), [class*="category-item"], [class*="result-item"]');
+    const results = page.locator([
+    '.sell-rich-text',
+    '[class*="category"]',
+    '[class*="result"]',
+    'table a',
+    'li',
+    '.next-table-row',
+    'tr[data-value]',
+    '.path-text',
+    '.leaf-node',
+    'div.category-list',
+    '.next-tree-node',
+  ].join(','));
     const count = await results.count();
     if (count === 0) {
       console.log('[Taobao] No category results found');
@@ -260,31 +286,22 @@ async function searchAndSelectCategory(page, cat) {
     let target = null;
     const catLower = cat.toLowerCase();
 
-    // First pass: exact or close match
-    for (let i = 0; i < Math.min(count, 15); i++) {
+    // First pass: any match containing the cat keyword (flexible)
+    for (let i = 0; i < Math.min(count, 30); i++) {
       const txt = await results.nth(i).textContent().catch(() => '');
       const cleanTxt = txt.trim();
+      if (!cleanTxt || cleanTxt.length > 60) continue;
       console.log(`[Taobao] [${i}]: "${cleanTxt}"`);
 
-      if (cleanTxt.endsWith(cat) || cleanTxt === cat || cleanTxt.includes('>>' + cat) || cleanTxt === cat.trim()) {
+      // Check if this element contains our cat keyword
+      if (cleanTxt.includes(cat) || cat.includes(cleanTxt)) {
         target = results.nth(i);
-        console.log(`[Taobao] Exact match: "${cleanTxt}"`);
+        console.log(`[Taobao] Good match: "${cleanTxt}"`);
         break;
       }
     }
 
-    // Second pass: contains match — but only if the match has the keyword as a full segment
-    if (!target) {
-      for (let i = 0; i < Math.min(count, 15); i++) {
-        const txt = await results.nth(i).textContent().catch(() => '');
-        // Require cat to appear as a whole segment (surrounded by >> or start/end)
-        if (txt.includes('>>' + cat) || txt.includes(cat + '>>') || txt === cat) {
-          target = results.nth(i);
-          console.log(`[Taobao] Good match: "${txt.trim()}"`);
-          break;
-        }
-      }
-    }
+
 
     // Third pass: pick the first result — but log a warning
     if (!target) {
@@ -292,8 +309,6 @@ async function searchAndSelectCategory(page, cat) {
       target = results.first();
     }
 
-
-    if (!target) target = results.first();
 
     const selectedText = await target.textContent();
     console.log(`[Taobao] Selected: "${selectedText}"`);
@@ -364,6 +379,37 @@ async function fillForm(page, title, price, desc, product) {
   // Scroll to top of form first
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(500);
+
+  // ---- DEBUG: Dump all input elements on page ----
+  console.log('[Taobao] DEBUG: Dumping all visible inputs...');
+  const inputsDebug = await page.evaluate(() => {
+    const inputs = document.querySelectorAll('input:not([type="hidden"])');
+    const results = [];
+    for (const inp of inputs) {
+      const r = inp.getBoundingClientRect();
+      if (r.width < 10 || r.height < 5) continue;
+      const container = inp.closest('[class*="form"],[class*="Form"],[class*="item"],[class*="Item"],[class*="field"],[class*="Field"]');
+      const parentText = (container?.textContent || inp.parentElement?.parentElement?.textContent || inp.parentElement?.textContent || '').trim().substring(0, 100);
+      const prevEl = inp.previousElementSibling;
+      const prevText = (prevEl?.textContent || '').trim().substring(0, 40);
+      results.push({
+        top: Math.round(r.top),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+        placeholder: (inp.placeholder || '').substring(0, 40),
+        value: (inp.value || '').substring(0, 20),
+        prevText,
+        parentText: parentText.substring(0, 120),
+      });
+    }
+    return results;
+  });
+  console.log('[Taobao] DEBUG inputs list:');
+  for (const d of inputsDebug) {
+    console.log(JSON.stringify(d));
+  }
+  // ---- End DEBUG ----
+
 
   // ---- Step 1: Fill title ----
   await fillTitle(page, title, filled);
@@ -481,44 +527,65 @@ async function fillTitle(page, title, filled) {
 }
 
 async function fillPrice(page, price, filled) {
-  console.log('[Taobao] Filling price...');
+  console.log('[Taobao] Filling price: ' + price);
   try {
     const priceResult = await page.evaluate(({ priceVal }) => {
-      const inputs = document.querySelectorAll('input');
+      const container = document.querySelector('#sell-field-price');
+      if (container) {
+        const inp = container.querySelector('input:not([type="hidden"]):not([type="radio"])');
+        if (inp) {
+          const r = inp.getBoundingClientRect();
+          if (r.width > 20 && r.height > 8) {
+            inp.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(inp, String(priceVal));
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, method: 'id', value: inp.value };
+          }
+        }
+      }
+
+      const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="radio"])');
       for (const inp of inputs) {
         const r = inp.getBoundingClientRect();
         if (r.width < 20 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 3000) continue;
-        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
-        const parentText = parent?.textContent || '';
-        const isPrice = parentText.includes('一口价') ||
-                        (parentText.includes('元') && !parentText.includes('库存') && parentText.includes('价'));
-        if (isPrice && inp.type !== 'hidden') {
+        var allText = '';
+        var el = inp;
+        for (var d = 0; d < 10 && el; d++) {
+          var t = (el.textContent || '').trim();
+          if (t) allText += '|' + t;
+          el = el.parentElement;
+        }
+        if (allText.includes('一口价') && allText.includes('|元|')) {
           inp.focus();
           const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
           setter.call(inp, String(priceVal));
           inp.dispatchEvent(new Event('input', { bubbles: true }));
           inp.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true };
+          return { success: true, method: 'walk', value: inp.value };
         }
       }
       return { success: false };
     }, { priceVal: price });
 
-    if (priceResult.success) { filled.price = true; console.log(`[Taobao] ✓ Price: ${price}`); }
-
-    if (!filled.price) {
+    if (priceResult.success) {
+      filled.price = true;
+      console.log('[Taobao] ✓ Price: ' + price + ' (' + priceResult.method + ')');
+    } else {
       const allInputs = page.locator('input:visible:not([type="hidden"])');
       const ic = await allInputs.count();
       for (let i = 0; i < ic; i++) {
         const inp = allInputs.nth(i);
         const parentText = await inp.evaluate(el => {
-          let p = el.parentElement;
-          for (let d = 0; d < 4 && p; d++) {
-            if ((p.textContent || '').includes('一口价')) return p.textContent;
+          var text = '';
+          var p = el;
+          for (var d = 0; d < 10 && p; d++) {
+            var t = (p.textContent || '').trim();
+            if (t) text += '|' + t;
             p = p.parentElement;
           }
-          return '';
+          return text;
         });
         if (parentText.includes('一口价')) {
           const box = await inp.boundingBox().catch(() => null);
@@ -526,7 +593,7 @@ async function fillPrice(page, price, filled) {
             await inp.click();
             await inp.fill(String(price));
             filled.price = true;
-            console.log(`[Taobao] ✓ Price (playwright): ${price}`);
+            console.log('[Taobao] ✓ Price (playwright): ' + price);
             break;
           }
         }
@@ -541,26 +608,75 @@ async function fillStock(page, filled) {
   console.log('[Taobao] Filling stock...');
   try {
     const stockResult = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input');
+      const container = document.querySelector('#sell-field-quantity');
+      if (container) {
+        const inp = container.querySelector('input:not([type="hidden"]):not([type="radio"])');
+        if (inp) {
+          const r = inp.getBoundingClientRect();
+          if (r.width > 20 && r.height > 8) {
+            inp.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(inp, '9999');
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, method: 'id', value: inp.value };
+          }
+        }
+      }
+
+      const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="radio"])');
       for (const inp of inputs) {
         const r = inp.getBoundingClientRect();
         if (r.width < 20 || r.height < 8) continue;
-        if (r.top < 0 || r.top > 3000) continue;
-        const parent = inp.closest('[class*="form"], [class*="Form"], [class*="item"], [class*="Item"], [class*="field"], [class*="Field"]') || inp.parentElement?.parentElement;
-        const parentText = parent?.textContent || '';
-        const isStock = parentText.includes('总库存') || (parentText.includes('库存') && parentText.includes('件'));
-        if (isStock && inp.type !== 'hidden') {
+        var allText = '';
+        var el = inp;
+        for (var d = 0; d < 10 && el; d++) {
+          var t = (el.textContent || '').trim();
+          if (t) allText += '|' + t;
+          el = el.parentElement;
+        }
+        if (allText.includes('总库存') && allText.includes('|件|')) {
           inp.focus();
           const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
           setter.call(inp, '9999');
           inp.dispatchEvent(new Event('input', { bubbles: true }));
           inp.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true };
+          return { success: true, method: 'walk', value: inp.value };
         }
       }
       return { success: false };
     });
-    if (stockResult.success) { filled.qty = true; console.log('[Taobao] ✓ Stock: 9999'); }
+
+    if (stockResult.success) {
+      filled.qty = true;
+      console.log('[Taobao] ✓ Stock: 9999 (' + stockResult.method + ')');
+    } else {
+      const allInputs = page.locator('input:visible:not([type="hidden"])');
+      const ic = await allInputs.count();
+      for (let i = 0; i < ic; i++) {
+        const inp = allInputs.nth(i);
+        const parentText = await inp.evaluate(el => {
+          var text = '';
+          var p = el;
+          for (var d = 0; d < 10 && p; d++) {
+            var t = (p.textContent || '').trim();
+            if (t) text += '|' + t;
+            p = p.parentElement;
+          }
+          return text;
+        });
+        if (parentText.includes('总库存')) {
+          const box = await inp.boundingBox().catch(() => null);
+          if (box && box.width > 20) {
+            await inp.click();
+            await inp.fill('9999');
+            filled.qty = true;
+            console.log('[Taobao] ✓ Stock (playwright): 9999');
+            break;
+          }
+        }
+      }
+    }
   } catch (e) {
     console.log('[Taobao] Stock fill error:', e.message);
   }
