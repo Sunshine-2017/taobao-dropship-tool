@@ -15,7 +15,7 @@
  */
 import { chromium } from 'playwright';
 import { join, resolve } from 'path';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync, readdirSync, statSync, copyFileSync, cpSync } from 'fs';
 
 // Use absolute paths to avoid cwd issues
 const PROJECT_ROOT = resolve(join(import.meta.url.replace('file:///', ''), '..', '..', '..'));
@@ -56,8 +56,36 @@ async function logStep(page, step, status, detail = {}) {
 // ============================================================
 // Browser launch
 // ============================================================
+// Copy profile to avoid lock conflict with user's own Edge
+function copyProfileSync(src, dst) {
+  if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
+  mkdirSync(dst, { recursive: true });
+  // Copy top-level files and dirs (skip locks/crash files)
+  const entries = readdirSync(src);
+  for (const e of entries) {
+    if (e === 'lockfile' || e === 'SingletonLock' || e === 'SingletonSocket' || e === 'SingletonCookie' || e === 'CrashpadMetrics-active.pma') continue;
+    const s = join(src, e);
+    const d = join(dst, e);
+    try {
+      if (statSync(s).isDirectory()) {
+        cpSync(s, d, { recursive: true, force: true });
+      } else {
+        copyFileSync(s, d);
+      }
+    } catch {}
+  }
+}
+
 async function launchContext() {
-  for (const dir of [SCREENSHOT_DIR, LOG_DIR, USER_DATA_DIR]) {
+  // Use a copy of the profile to avoid lock conflicts
+  const COPY_USER_DATA_DIR = USER_DATA_DIR + '-playwright-copy';
+  if (existsSync(COPY_USER_DATA_DIR)) {
+    try { rmSync(COPY_USER_DATA_DIR, { recursive: true, force: true }); } catch {}
+  }
+  copyProfileSync(USER_DATA_DIR, COPY_USER_DATA_DIR);
+  console.log('[Taobao] Using profile copy:', COPY_USER_DATA_DIR);
+
+  for (const dir of [SCREENSHOT_DIR, LOG_DIR]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
 
@@ -90,7 +118,7 @@ async function launchContext() {
     launchOpts.channel = browserChannel;
   }
 
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, launchOpts);
+  const context = await chromium.launchPersistentContext(COPY_USER_DATA_DIR, launchOpts);
 
   console.log('[Taobao] Browser launched successfully');
   return context;
@@ -224,10 +252,11 @@ async function searchAndSelectCategory(page, cat) {
 
   // Step 2: Find and fill search input
   await page.waitForTimeout(1000);
+  // Use the precise placeholder that matches the category search input
   const searchInput = page.locator([
-    'input[placeholder*="类目"]',
-    'input[placeholder*="关键词"]',
-    'input[placeholder*="搜索"]',
+    'input[placeholder*="可输入"]',
+    'input[placeholder*="产品名称"]',
+    'input[placeholder*="类目关键词"]',
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):visible',
   ].join(',')).first();
   if (await searchInput.count() === 0) {
@@ -238,10 +267,48 @@ async function searchAndSelectCategory(page, cat) {
     return false;
   }
   console.log('[Taobao] Typing category keyword: "' + cat + '"');
+
+  // Diagnostic: what input did we find?
+  const inputInfo = await page.evaluate(() => {
+    const inputs = document.querySelectorAll('input:not([type="hidden"])');
+    return Array.from(inputs).slice(0, 5).map(i => ({
+      placeholder: i.placeholder,
+      id: i.id,
+      className: (i.className || '').substring(0, 40),
+      w: Math.round(i.getBoundingClientRect().width),
+      top: Math.round(i.getBoundingClientRect().top),
+      parentText: ((i.parentElement?.textContent || '').trim().substring(0, 40))
+    }));
+  });
+  console.log('[Taobao] Inputs on page:', JSON.stringify(inputInfo));
+
+  // Type keyword using Playwright, with slow typing to trigger React
   await searchInput.click();
+  await page.waitForTimeout(300);
   await searchInput.fill(cat);
+  await page.waitForTimeout(500);
+
+  // Press Tab to trigger blur/change events, then Enter
+  await page.keyboard.press('Tab');
   await page.waitForTimeout(300);
   await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+
+  // Also try clicking the search button/text
+  await page.evaluate(() => {
+    const items = document.querySelectorAll('button, a, span');
+    for (const el of items) {
+      const t = (el.textContent || '').trim();
+      if (t === '搜索' && el.offsetParent !== null && el.tagName !== 'SPAN') {
+        el.click();
+        return;
+      }
+    }
+  });
+  await page.waitForTimeout(500);
+
   console.log('[Taobao] Search submitted, waiting 4s for results...');
   await page.waitForTimeout(4000);
 
@@ -528,6 +595,31 @@ async function fillTitle(page, title, filled) {
 
 async function fillPrice(page, price, filled) {
   console.log('[Taobao] Filling price: ' + price);
+  // INPUT DIAGNOSTIC: dump all visible inputs
+  try {
+    const diag = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('input:not([type="hidden"])')).map(inp => ({
+        id: inp.id,
+        placeholder: inp.placeholder,
+        className: (inp.className || '').substring(0, 60),
+        width: Math.round(inp.getBoundingClientRect().width),
+        top: Math.round(inp.getBoundingClientRect().top),
+        parents: (() => {
+          let el = inp.parentElement;
+          const texts = [];
+          for (let i = 0; i < 5 && el; i++) {
+            texts.push((el.textContent || '').trim().substring(0, 60));
+            el = el.parentElement;
+          }
+          return texts;
+        })()
+      }));
+    });
+    console.log('[Taobao] INPUT DIAGNOSTIC:', JSON.stringify(diag, null, 2));
+  } catch(e) {
+    console.log('[Taobao] INPUT DIAG error:', e.message);
+  }
+
   try {
     const priceResult = await page.evaluate(({ priceVal }) => {
       const container = document.querySelector('#sell-field-price');
