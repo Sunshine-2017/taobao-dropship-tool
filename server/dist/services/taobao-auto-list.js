@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Taobao auto-listing service via Playwright
  *
  * KEY BREAKTHROUGH (2026-06-13):
@@ -1493,33 +1493,56 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
     const productResult = { id: p.id, title, success: false, message: '' };
 
     try {
-      // Navigate to AI publish page
-      const navErr = await page.goto('https://item.upload.taobao.com/sell/ai/category.htm?force=true', {
+      // DIRECT: Skip AI category search, go straight to publish page
+      // Use catId map from known successful searches (花茶 → 125242010)
+      const CATEGORY_CAT_IDS = {
+        '花茶': '125242010',
+        '药食同源': '125242011',
+        '滋补品': '125242012',
+        '茶叶': '125242013',
+        '组合型花茶': '125242014',
+        '食品': '125242015',
+        '手机配件': '125242016',
+        '收纳用品': '125242017',
+        '其他': '50008168',
+      };
+      const catId = CATEGORY_CAT_IDS[cat] || '50008168';
+      console.log(`[Taobao] Skipping AI category search for "${cat}", going to publish page catId=${catId}`);
+      await page.goto(`https://item.upload.taobao.com/sell/v2/publish.htm?catId=${catId}&fromAICategory=true`, {
         waitUntil: 'domcontentloaded', timeout: 30000,
-      }).catch(e => e);
-      if (navErr) console.log('[Taobao] Nav error:', navErr.message);
-      await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
-      console.log(`[Taobao] URL: ${page.url()}`);
+      }).catch(e => console.log('[Taobao] Publish nav error:', e.message));
+      await page.waitForTimeout(8000);
+      const pubUrlStage = page.url();
+      console.log(`[Taobao] Publish page URL: ${pubUrlStage}`);
 
-      await logStep(page, 'enter-search', 'ok', { title, cat });
-
-      // Category selection
-      const catOk = await searchAndSelectCategory(page, cat);
-      await logStep(page, 'category-done', catOk ? 'success' : 'failed', { cat });
-
-      if (!catOk) {
-        console.log('[Taobao] Category selection failed, waiting for manual redirect...');
-        try {
-          await page.waitForFunction(
-            () => {
-              const u = window.location.href;
-              return u.includes('publish') && !u.includes('category') && !u.includes('router');
-            },
-            { timeout: 120000, polling: 2000 }
-          );
-        } catch (e) {
-          console.log('[Taobao] Redirect timeout:', e.message);
+      // Fallback: if redirected to login, try old category search
+      let catOk = false;
+      if (pubUrlStage.includes('login') || pubUrlStage.includes('passport') || pubUrlStage.includes('category')) {
+        console.log('[Taobao] Direct nav failed, falling back to AI category search...');
+        const navErr2 = await page.goto(`https://item.upload.taobao.com/sell/ai/category.htm?force=true`, {
+          waitUntil: 'domcontentloaded', timeout: 30000,
+        }).catch(e => e);
+        if (navErr2) console.log('[Taobao] Fallback nav error:', navErr2.message);
+        await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(2000);
+        catOk = await searchAndSelectCategory(page, cat);
+        await logStep(page, 'category-done', catOk ? 'success' : 'failed', { cat });
+        if (!catOk) {
+          console.log('[Taobao] Category search failed too, waiting for manual redirect...');
+          try {
+            await page.waitForFunction(
+              () => {
+                const u = window.location.href;
+                return u.includes('publish') && !u.includes('category') && !u.includes('router');
+              },
+              { timeout: 120000, polling: 2000 }
+            );
+          } catch (e) {
+            console.log('[Taobao] Redirect timeout:', e.message);
+          }
         }
+      } else if (pubUrlStage.includes('publish')) {
+        catOk = true;
       }
 
       // Fill form only if on publish page
