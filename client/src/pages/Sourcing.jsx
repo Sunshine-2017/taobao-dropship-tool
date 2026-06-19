@@ -9,7 +9,7 @@ import {
   CheckCircleOutlined, SearchOutlined, ShoppingCartOutlined,
   RocketOutlined,
 } from '@ant-design/icons';
-import { extractUrl, importManual, searchSource } from '../api';
+import { extractUrl, importManual, searchSource as searchSourceAPI } from '../api';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
@@ -60,19 +60,18 @@ export default function Sourcing() {
     setSelectedProducts([]);
     setSearchSource('');
     try {
-      const { data } = await searchSource({ keyword: kw, limit: 20 });
-      if (data.ok && data.products.length > 0) {
+      const { data } = await searchSourceAPI({ keyword: kw, limit: 20 });
+      console.log('Search response:', data); // Debug log
+      if (data.ok && data.products && data.products.length > 0) {
         setSearchResults(data.products);
         setSearchSource(data.source || 'real');
         message.success(`找到 ${data.products.length} 个商品`);
-      } else if (data.blocked) {
-        setSearchErr(data.message || '1688需要验证，请稍后重试');
-        message.warning('搜索受限，请稍后重试');
       } else {
         setSearchErr('未找到匹配商品，请尝试其他关键词');
         message.info('未找到匹配商品');
       }
     } catch (err) {
+      console.error('Search error:', err);
       const msg = err?.response?.data?.error || '搜索失败，请稍后重试';
       setSearchErr(msg);
       message.error(msg);

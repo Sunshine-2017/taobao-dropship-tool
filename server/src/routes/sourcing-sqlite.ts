@@ -18,12 +18,15 @@ function rowToSource(row: Record<string, unknown>): SourceProduct {
 // ── Search 1688 ──────────────────────────────────────────────────
 router.post('/search', async (req: Request, res: Response) => {
   const { keyword, minPrice, maxPrice, limit, province } = req.body;
-  if (!keyword || !keyword.trim()) {
+  let kw = keyword.trim();
+  // Decode URL-encoded UTF-8 (axios sends Chinese as encoded)
+  try { kw = decodeURIComponent(kw); } catch {}
+  if (!kw) {
     return res.status(400).json({ error: '请输入搜索关键词' });
   }
 
   try {
-    const result = await search1688(keyword.trim(), {
+    const result = await search1688(kw, {
       minPrice: minPrice ? parseFloat(minPrice) : undefined,
       maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
       limit: parseInt(limit) || 20,

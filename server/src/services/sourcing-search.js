@@ -121,7 +121,10 @@ const MOCK_CATALOG = {
 // Keyword → catalog matching
 // ============================================================
 function matchCatalog(keyword) {
-  const kw = keyword.toLowerCase();
+  // Decode URL-encoded keyword
+  let kw = keyword.toLowerCase();
+  try { kw = decodeURIComponent(kw).toLowerCase(); } catch {}
+  kw = kw.replace(/\?/g, '').replace(/&/g, '');
 
   const teaWords = ["茶", "花", "菊", "玫瑰", "茉莉", "桂花", "柠檬", "陈皮", "荷叶", "薄荷", "决明", "胖大海", "洛神", "泡", "饮", "荞", "蒡", "桑叶", "大麦", "金银花"];
   const herbWords = ["枸杞", "黄芪", "三七", "灵芝", "石斛", "虫草", "当归", "党参", "人参", "红枣", "银耳", "燕窝", "阿胶", "鹿茸", "参", "药", "补", "养生", "保健", "田七", "天麻", "贝母", "藏红花", "酸枣"];
@@ -299,31 +302,34 @@ async function search1688Real(keyword, limit = 20) {
 // ============================================================
 export async function search1688(keyword, options = {}) {
   const { limit = 20 } = options;
-  console.log('[1688Search] keyword="' + keyword + '"');
+  // Decode URL-encoded UTF-8 keyword (Chinese chars may arrive encoded)
+  let decodedKw = keyword;
+  try { decodedKw = decodeURIComponent(keyword); } catch {}
+  console.log('[1688Search] keyword="' + keyword + '" decoded="' + decodedKw + '"');
 
   // Check cache first
-  const cached = getCached(keyword);
+  const cached = getCached(decodedKw);
   if (cached) {
     console.log('[1688Search] Cache hit, ' + cached.length + ' products');
-    return { products: cached.slice(0, limit), totalResults: cached.length, keyword, source: "cache" };
+    return { products: cached.slice(0, limit), totalResults: cached.length, keyword: decodedKw, source: "cache" };
   }
 
   // Try real search
   let realProducts = [];
   try {
-    realProducts = await search1688Real(keyword, limit);
+    realProducts = await search1688Real(decodedKw, limit);
   } catch (e) {
     console.log('[1688Search] Real search failed: ' + e.message);
   }
 
   if (realProducts.length > 0) {
     console.log('[1688Search] Real results: ' + realProducts.length);
-    setCache(keyword, realProducts);
-    return { products: realProducts.slice(0, limit), totalResults: realProducts.length, keyword };
+    setCache(decodedKw, realProducts);
+    return { products: realProducts.slice(0, limit), totalResults: realProducts.length, keyword: decodedKw };
   }
 
   // Fallback to mock
-  const mockProducts = getMockProducts(keyword, limit);
+  const mockProducts = getMockProducts(decodedKw, limit);
   console.log('[1688Search] Using mock data: ' + mockProducts.length + ' products');
-  return { products: mockProducts, totalResults: mockProducts.length, keyword, source: "mock" };
+  return { products: mockProducts, totalResults: mockProducts.length, keyword: decodedKw, source: "mock" };
 }

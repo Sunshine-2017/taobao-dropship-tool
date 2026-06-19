@@ -36,6 +36,7 @@ export const batchUpdatePrice = (data) => api.put('/products/batch/price', data)
 export const extractUrl = (data) => api.post('/sourcing/extract-url', data);
 export const importManual = (data) => api.post('/sourcing/import-manual', data);
 export const searchSource = (data) => api.post('/sourcing/search', data);
+export { searchSource as search1688Source };
 export const getSearchStatus = (taskId) => api.get(`/sourcing/status/${taskId}`);
 export const importProducts = (data) => api.post('/sourcing/import', data);
 
