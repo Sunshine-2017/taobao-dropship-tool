@@ -309,27 +309,31 @@ export async function search1688(keyword, options = {}) {
 
   // Check cache first
   const cached = getCached(decodedKw);
-  if (cached) {
+  if (cached && cached.length > 0) {
     console.log('[1688Search] Cache hit, ' + cached.length + ' products');
     return { products: cached.slice(0, limit), totalResults: cached.length, keyword: decodedKw, source: "cache" };
   }
 
-  // Try real search
+  // Try real search — if it fails or returns 0 results, try mock
   let realProducts = [];
+  let realError = null;
   try {
+    // Limit real search time to avoid hanging
     realProducts = await search1688Real(decodedKw, limit);
   } catch (e) {
-    console.log('[1688Search] Real search failed: ' + e.message);
+    realError = e.message;
+    console.log('[1688Search] Real search error: ' + e.message);
   }
 
   if (realProducts.length > 0) {
     console.log('[1688Search] Real results: ' + realProducts.length);
     setCache(decodedKw, realProducts);
-    return { products: realProducts.slice(0, limit), totalResults: realProducts.length, keyword: decodedKw };
+    return { products: realProducts.slice(0, limit), totalResults: realProducts.length, keyword: decodedKw, source: "real" };
   }
 
-  // Fallback to mock
+  // Fall back to mock when real search fails or returns 0
+  // 1688 is heavily anti-bot protected — real search will often fail
+  console.log('[1688Search] Real search returned ' + realProducts.length + ' (error: ' + !!realError + '), using mock');
   const mockProducts = getMockProducts(decodedKw, limit);
-  console.log('[1688Search] Using mock data: ' + mockProducts.length + ' products');
   return { products: mockProducts, totalResults: mockProducts.length, keyword: decodedKw, source: "mock" };
 }
