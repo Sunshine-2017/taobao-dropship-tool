@@ -12,3 +12,15 @@ test-browser/
 server/data/
 *.log
 *.txt
+server/*.mjs
+server/dist/*.mjs
+server/dist/just.js
+server/dist/services/*.mjs
+server/dist/services/*.cjs
+server/dist/services/taobao-auto-list.clean.js
+server/dist/services/taobao-core.js
+server/src/services/*.bak
+server/diag_*.mjs
+server/e2e_*.mjs
+server/check_*.mjs
+server/reconnect.mjs

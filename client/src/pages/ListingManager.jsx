@@ -1,11 +1,11 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Button, Tag, Space, message, Card, Statistic, Row, Col, Modal, Descriptions, Popconfirm, Empty, Alert, Input, Form } from 'antd';
+import { Table, Button, Tag, Space, message, Card, Statistic, Row, Col, Modal, Descriptions, Popconfirm, Empty, Alert, Input, Progress } from 'antd';
 import {
   DownloadOutlined, CheckCircleOutlined, EyeOutlined, DeleteOutlined,
-  RocketOutlined, ImportOutlined, ThunderboltOutlined,
+  RocketOutlined, ImportOutlined, ThunderboltOutlined, CloseCircleOutlined, LoadingOutlined,
 } from '@ant-design/icons';
-import { getListings, getProducts, generateCSV, autoListTaobao, getAutoListStatus, updateListing, deleteListing, deleteProduct } from '../api';
+import { getListings, getProducts, generateCSV, autoListTaobao, getAutoListTask, cancelAutoListTask, getAutoListStatus, updateListing, deleteListing, deleteProduct } from '../api';
 
 export default function ListingManager() {
   const navigate = useNavigate();
@@ -18,6 +18,10 @@ export default function ListingManager() {
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [csvResult, setCsvResult] = useState(null);
   const [autoListStatus, setAutoListStatus] = useState(null);
+
+  // Background task polling
+  const [activeTask, setActiveTask] = useState(null); // { taskId, progress, status, results }
+  const pollRef = useRef(null);
 
   const fetchData = () => {
     setLoading(true);
@@ -32,7 +36,10 @@ export default function ListingManager() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); return () => {
+    // Cleanup poll interval on unmount
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }; }, []);
 
   const unlistedProducts = allProducts.filter(p => p.status !== 'listed');
 
@@ -65,31 +72,55 @@ export default function ListingManager() {
     setAutoListing(true);
     try {
       const { data } = await autoListTaobao({ productIds, category: autoListCategory, prices });
-      setSelectedRowKeys([]);
-
-      const results = data.results || [];
-      const successCount = results.filter(r => r.success).length;
-      const failCount = results.filter(r => !r.success).length;
-
-      if (successCount > 0 && failCount === 0) {
-        message.success(`全部 ${successCount} 件商品上架成功！`);
-      } else if (successCount > 0) {
-        Modal.warning({
-          title: '部分上架成功',
-          content: `${successCount} 件成功，${failCount} 件失败。失败原因：${results.filter(r => !r.success).map(r => r.message).slice(0, 3).join('；')}`,
-        });
-      } else {
-        Modal.error({
-          title: '上架失败',
-          content: results[0]?.message || '未知错误，请检查浏览器状态',
-        });
-      }
-
-      fetchData();
+      const taskId = data.taskId;
+      setActiveTask({ taskId, progress: data.message, status: 'running', step: 0 });
+      setAutoListing(false);
+      // Start polling
+      pollRef.current = setInterval(async () => {
+        try {
+          const { data: status } = await getAutoListTask(taskId);
+          if (!status) {
+            clearInterval(pollRef.current);
+            setActiveTask(null);
+            return;
+          }
+          setActiveTask(prev => ({ ...prev, progress: status.progress, status: status.status }));
+          if (status.status === 'complete' || status.status === 'error' || status.status === 'cancelled') {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+            if (status.status === 'complete' && status.result) {
+              const results = status.result.results || [];
+              const successCount = results.filter(r => r.success).length;
+              const failCount = results.filter(r => !r.success).length;
+              if (successCount > 0 && failCount === 0) {
+                message.success(`全部 ${successCount} 件商品上架成功！`);
+              } else if (successCount > 0) {
+                Modal.warning({
+                  title: '部分上架成功',
+                  content: `${successCount} 件成功，${failCount} 件失败。失败原因：${results.filter(r => !r.success).map(r => r.message).slice(0, 3).join('；')}`,
+                });
+              } else {
+                Modal.error({
+                  title: '上架失败',
+                  content: results[0]?.message || '未知错误，请检查浏览器状态',
+                });
+              }
+            } else if (status.status === 'error') {
+              Modal.error({ title: '上架失败', content: status.error || '未知错误' });
+            }
+            setActiveTask(null);
+            setSelectedRowKeys([]);
+            fetchData();
+          }
+        } catch (e) {
+          // Polling error — server might be busy, keep trying
+          console.debug('[Poll] Error:', e.message);
+        }
+      }, 2000);
     } catch (err) {
+      setAutoListing(false);
       message.error('启动失败: ' + (err.response?.data?.message || err.message));
     }
-    setAutoListing(false);
   };
 
   // === CSV flow ===
@@ -229,8 +260,9 @@ export default function ListingManager() {
         message="推荐工作流：搜索选品 → 导入商品库 → 一键上架（自动填写淘宝发布页）"
         description={
           <span>
-            点击「一键上架」会自动打开浏览器，登录淘宝后自动填写商品信息。
-            图片需要在浏览器中手动上传，其他信息自动完成。
+            点击「一键上架」会自动打开浏览器并自动完成所有流程：<br/>
+            登录淘宝 → 选择类目 → 填写标题/价格/库存 → 自动上传图片 → 提交上架。
+            全程自动化，无需手动操作。
             {autoListStatus?.hasProfile && <Tag color="green" style={{ marginLeft: 8 }}>浏览器Profile已存在</Tag>}
           </span>
         }
@@ -238,6 +270,37 @@ export default function ListingManager() {
         showIcon
         style={{ marginBottom: 16 }}
       />
+
+      {/* Auto-list progress bar */}
+      {activeTask && (
+        <Card size="small" style={{ marginBottom: 16, background: '#f6ffed', border: '1px solid #b7eb8f' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {activeTask.status === 'running' ? (
+              <LoadingOutlined style={{ fontSize: 20, color: '#52c41a' }} />
+            ) : activeTask.status === 'error' ? (
+              <CloseCircleOutlined style={{ fontSize: 20, color: '#ff4d4f' }} />
+            ) : (
+              <CheckCircleOutlined style={{ fontSize: 20, color: '#52c41a' }} />
+            )}
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500, marginBottom: 4 }}>
+                {activeTask.status === 'running' ? '上架进行中' :
+                 activeTask.status === 'complete' ? '上架完成' :
+                 activeTask.status === 'error' ? '上架出错' : '上架已取消'}
+              </div>
+              <div style={{ color: '#666', fontSize: 13 }}>{activeTask.progress}</div>
+            </div>
+            {activeTask.status === 'running' && (
+              <Button size="small" icon={<CloseCircleOutlined />} onClick={async () => {
+                await cancelAutoListTask(activeTask.taskId);
+                clearInterval(pollRef.current);
+                pollRef.current = null;
+                setActiveTask(null);
+              }}>取消</Button>
+            )}
+          </div>
+        </Card>
+      )}
 
       <Card title={`待上架商品（${unlistedProducts.length}）`} style={{ marginBottom: 16 }}>
         {unlistedProducts.length === 0 ? (

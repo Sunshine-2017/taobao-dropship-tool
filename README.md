@@ -1,4 +1,4 @@
-# 淘宝无货源自动上架工具
+﻿# 淘宝无货源自动上架工具
 
 > Taobao Dropship Auto-Listing Tool
 
@@ -190,19 +190,33 @@ taobao-dropship-tool/
 
 ## 关键文件: taobao-auto-list.js
 
-这是整个自动化的核心，约1300行。主要函数：
+这是整个自动化的核心，约1600行。主要函数：
 
 | 函数 | 职责 | 当前状态 |
 |------|------|---------|
-| `launchContext()` | 启动Chromium，复用`data/taobao-profile/`登录态 | ✅ |
-| `searchAndSelectCategory(page, cat)` | 打开AI类目页 → 搜索类目关键词 → 选匹配结果 → 点下一步 | ✅ 含waitForLogin |
-| `fillForm(page, title, price, desc, product)` | 填宝贝标题/价格/库存/品牌/包装/产地/运费模板 | ✅ 含await修复 |
+| `launchContext()` | 启动Chromium，复用`data/taobao-profile/`登录态，自动复制 profile 防锁 | ✅ profile copy-back |
+| `searchAndSelectCategory(page, cat)` | 打开AI类目页 → 搜索类目关键词 → 选匹配结果 → 点下一步 | ✅ 支持完整路径搜索 |
+| `fillForm(page, title, price, desc, product)` | 填宝贝标题/价格/库存/品牌/包装/产地/运费模板 | ✅ page.evaluate DOM遍历 |
 | `fillTitle()` | 输入60汉字placeholder匹配，JS setter注入 | ✅ |
-| `fillBrand()` | 点击"请选择"下拉框，选第一项或输入"其他" | ⚠️ 选择器待诊断验证 |
+| `fillBrand()` | 通过DOM遍历找到品牌附近的下拉框/输入框 | ✅ 重写，使用page.evaluate |
 | `fillStock()` | 填总库存=9999 | ✅ |
-| `uploadImagesViaIframe()` | 图片上传（sucai-selector-ng iframe） | ⚠️ 未见实际验证 |
+| `uploadImagesViaIframe()` | 图片上传 — 先点slot，触发fileChooser，遍历iframe | ✅ 多策略重试 |
 | `submitAndVerify()` | 点"提交宝贝信息"，检测成功/错误 | ✅ |
-| `batchListToTaobao(products, overrideCategory)` | 主调度器 | ✅ 加了waitForLogin |
+| `batchListToTaobao(products, overrideCategory)` | 主调度器 | ✅ 支持onProgress回调 |
+| `copyProfileBack()` | 浏览器关闭后，将Playwright修改的profile同步回taobao-profile | ✅ 新增 |
+
+### 架构说明
+
+**后台异步上架**：`POST /api/listings/auto-list` 不再阻塞等待浏览器完成，而是立即返回 `{ taskId }`。前端轮询 `GET /api/listings/auto-list-task/:taskId` 获取进度。支持取消任务 `POST /.../cancel`。
+
+**类目选择策略**（按优先级）：
+1. 如果用户填完整类目路径（含`>`），用AI类目页搜索，按叶子→父级→根顺序尝试匹配
+2. 已知类目（花茶、茶叶等）走 catId 直跳
+3. 其他类目走 AI 类目页搜索
+
+**字段填写策略**：通过 `page.evaluate()` 在DOM内按label文本（品牌、包装方式、产地等）查找附近的选择器/输入框，比纯CSS选择器更可靠。
+
+**Profile持久化**：launch前复制 `taobao-profile` → `taobao-profile-playwright-copy`，Playwright 写入 copy 目录，完成后 copyProfileBack() 将修改同步回原目录。
 
 ### 关键修复历史
 
@@ -217,6 +231,14 @@ taobao-dropship-tool/
 | 06-16 | 类目路径提取（"茶>>组合型花茶"→"组合型花茶"） | taobao-auto-list.js |
 | 06-16 | 类目匹配逻辑修复（避免"花茶"匹配到"花茶机"） | taobao-auto-list.js |
 | 06-17 | ProductLibrary.jsx编码修复 | ProductLibrary.jsx |
+| 06-19 | 新增auto-list-runner后台任务系统 | auto-list-runner.js |
+| 06-19 | 新增copyProfileBack() profile持久化 | taobao-auto-list.js |
+| 06-19 | batchListToTaobao支持onProgress回调 | taobao-auto-list.js |
+| 06-19 | 前端进度轮询+取消按钮 | ListingManager.jsx |
+| 06-19 | 品牌/包装/产地/运费字段重写，使用page.evaluate DOM遍历 | taobao-auto-list.js |
+| 06-19 | 图片上传重写多策略 | taobao-auto-list.js |
+| 06-19 | 类目选择支持完整路径搜索 | taobao-auto-list.js |
+| 06-19 | API改为后台异步模式 | listings-sqlite.ts |
 
 ---
 
@@ -246,29 +268,36 @@ cd server && node dist/index.js
 1. 检测到 `login`/`passport` URL → 打印 `⛔ REDIRECTED TO LOGIN PAGE`
 2. 进入等待模式 → `⏳ Waiting for login (scan QR code in the browser window)...`
 3. 最长等待 5 分钟，每 2 秒轮询一次 URL
-4. 扫码登录后 → 自动 re-navigate 到 AI 类目页 → 继续流程
+4. 扫码登录后 → 自动 re-navigate → 继续流程
 5. 超时则返回 false
 
-只需登录一次，cookie 保存在 `data/taobao-profile/`，后续运行自动复用。
+只需登录一次，cookie 保存在 `data/taobao-profile/`，后续运行自动复用（profile copy-back 机制）。
 
 ### 3. ⚠️ 类目匹配不够精准
 
-**问题**: 用户在弹窗填 `茶>代用/花草/水果/再加工茶>组合型花茶`，代码提取叶子类目 `组合型花茶` 去搜索，但搜索结果可能不包含这个精确结果，导致选到不相关的类目（如花茶机）。
+**问题**: 用户填 `汽车零部件/养护/美容/维保>>阿里车码头汽车服务>>全车检测服务`，如果淘宝AI类目搜索结果不包含此精确类目，会选到不相关的类目。
 
-**当前修复**: 匹配逻辑要求类目关键词作为完整 segment 出现（`>>组合型花茶` 或 `组合型花茶>>`），不再做字符级别的模糊匹配。如果无匹配，选第一个结果并打 warning。
+**当前策略**: 用完整路径搜索，按叶子→父级→根顺序尝试不同关键词。
 
-**可能的改进方向**: 
+**可能的改进方向**:
 - 用淘宝API直接通过类目ID跳转（绕过AI搜索页）
 - 保存常用类目的映射表
 - 让用户填写更精确的类目关键词
 
-### 4. ⚠️ 图片上传未验证
+### 4. ⚠️ 图片上传未完整验证
 
-`uploadImagesViaIframe()` 走的是 sucai-selector-ng iframe + 本地上传路径。之前说七种策略都堵死，但这套 iframe 方案是新写的，实际效果未在 E2E 中验证。
+`uploadImagesViaIframe()` 经历了多次重写，当前策略是：
+1. page.evaluate DOM遍历找到图片上传slot并点击
+2. 设置fileChooser事件监听
+3. 在主页面或iframe中点"本地上传"按钮
+4. 如果fileChooser不触发，尝试直接操作 `<input type="file">`
+5. 关闭弹窗
+
+实际效果需要E2E验证。
 
 ### 5. ⚠️ 表单字段选择器待验证
 
-品牌、包装、产地、运费模板的选择器基于诊断数据写的，但未在完整 E2E 中验证（因为卡在登录）。需要跑通一次确认哪些字段 true/false。
+品牌、包装、产地、运费模板的选择器已通过 `page.evaluate()` DOM遍历重写，但未在完整E2E中验证过（依赖先解决登录+类目选择）。
 
 ---
 

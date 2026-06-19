@@ -42,7 +42,9 @@ export const importProducts = (data) => api.post('/sourcing/import', data);
 // Listings
 export const getListings = (params) => api.get('/listings', { params });
 export const generateCSV = (data) => api.post('/listings/generate-csv', data);
-export const autoListTaobao = (data) => api.post('/listings/auto-list', data, { timeout: 300000 });
+export const autoListTaobao = (data) => api.post('/listings/auto-list', data, { timeout: 15000 }); // quick — returns taskId immediately
+export const getAutoListTask = (taskId) => api.get(`/listings/auto-list-task/${taskId}`, { timeout: 10000 });
+export const cancelAutoListTask = (taskId) => api.post(`/listings/auto-list-task/${taskId}/cancel`);
 export const getAutoListStatus = () => api.get('/listings/auto-list-status');
 export const updateListing = (id, data) => api.put(`/listings/${id}`, data);
 export const deleteListing = (id) => api.delete(`/listings/${id}`);

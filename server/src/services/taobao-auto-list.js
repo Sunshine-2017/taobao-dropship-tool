@@ -1,17 +1,19 @@
 ﻿/**
  * Taobao auto-listing service via Playwright
  *
- * KEY BREAKTHROUGH (2026-06-13):
- *   Image upload works via the iframe-based file selector (sucai-selector-ng),
- *   NOT through the main page DOM. See uploadImagesViaIframe().
- *
  * Architecture:
  * - launchContext(): persistent browser context with saved login
- * - searchAndSelectCategory(): find and select product category
+ * - searchAndSelectCategory(): find and select product category (fallback)
  * - fillForm(): fill title, price, stock on publish page
  * - uploadImagesViaIframe(): upload product images via iframe dialog
  * - submitAndVerify(): click submit and check success
  * - batchListToTaobao(): orchestrates the full flow
+ *
+ * Profile persistence mechanism:
+ *   1. Before launch: copies taobao-profile → taobao-profile-playwright-copy
+ *   2. Playwright writes session/cookies to the copy
+ *   3. After batch completes: copies copy → taobao-profile (preserving login)
+ *   4. Browser context is closed to flush all data
  */
 import { chromium } from 'playwright';
 import { join, resolve } from 'path';
@@ -77,13 +79,28 @@ function copyProfileSync(src, dst) {
 }
 
 async function launchContext() {
-  // Use a copy of the profile to avoid lock conflicts
   const COPY_USER_DATA_DIR = USER_DATA_DIR + '-playwright-copy';
+
+  // Clean old copy first
   if (existsSync(COPY_USER_DATA_DIR)) {
     try { rmSync(COPY_USER_DATA_DIR, { recursive: true, force: true }); } catch {}
   }
-  copyProfileSync(USER_DATA_DIR, COPY_USER_DATA_DIR);
-  console.log('[Taobao] Using profile copy:', COPY_USER_DATA_DIR);
+
+  // Copy profile if it exists (has content)
+  if (existsSync(USER_DATA_DIR)) {
+    const entries = readdirSync(USER_DATA_DIR);
+    if (entries.length > 0) {
+      copyProfileSync(USER_DATA_DIR, COPY_USER_DATA_DIR);
+      console.log('[Taobao] Using profile copy:', COPY_USER_DATA_DIR);
+    } else {
+      mkdirSync(COPY_USER_DATA_DIR, { recursive: true });
+      console.log('[Taobao] Profile dir empty, starting fresh');
+    }
+  } else {
+    mkdirSync(USER_DATA_DIR, { recursive: true });
+    mkdirSync(COPY_USER_DATA_DIR, { recursive: true });
+    console.log('[Taobao] No profile dir, created fresh');
+  }
 
   for (const dir of [SCREENSHOT_DIR, LOG_DIR]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -122,6 +139,37 @@ async function launchContext() {
 
   console.log('[Taobao] Browser launched successfully');
   return context;
+}
+
+// ============================================================
+// Profile persistence — copy Playwright's changes back
+// ============================================================
+/**
+ * After Playwright finishes, copy the updated copy dir back to the canonical
+ * taobao-profile dir so login state persists across runs.
+ */
+function copyProfileBack() {
+  const COPY_USER_DATA_DIR = USER_DATA_DIR + '-playwright-copy';
+  if (!existsSync(COPY_USER_DATA_DIR)) {
+    console.log('[Taobao] No playwright-copy to sync back');
+    return;
+  }
+  const entries = readdirSync(COPY_USER_DATA_DIR);
+  if (entries.length < 2) {
+    console.log('[Taobao] Playwright-copy is empty, skipping sync');
+    return;
+  }
+
+  // Wipe canonical dir and replace with copy
+  if (existsSync(USER_DATA_DIR)) {
+    try { rmSync(USER_DATA_DIR, { recursive: true, force: true }); } catch {}
+  }
+  try {
+    cpSync(COPY_USER_DATA_DIR, USER_DATA_DIR, { recursive: true, force: true });
+    console.log('[Taobao] ✓ Profile synced back to taobao-profile');
+  } catch (e) {
+    console.log('[Taobao] Profile sync error:', e.message);
+  }
 }
 
 // ============================================================
@@ -742,186 +790,229 @@ async function fillStock(page, filled) {
 }
 
 /**
- * Fill brand field. Based on diagnostic:
- * - INPUT @ w=88px top=1107, placeholder="请选择" (it's a dropdown/selector)
- * - Label text "品牌" nearby
- * Strategy: click the input to open dropdown, then pick first option or type
+ * Fill brand field. Uses page.evaluate to deeply inspect the DOM and find the
+ * correct element by label text proximity. This is more reliable than CSS selectors
+ * on Taobao's complex SPA publish page.
  */
 async function fillBrand(page, filled) {
-  console.log('[Taobao] Filling brand (dropdown)...');
+  console.log('[Taobao] Filling brand...');
   try {
-    // Simplified: find "请选择" inputs near "品牌" label, click and type "其他"
-    const allInputs = page.locator('input[placeholder*="请选择"]');
-    const ic = await allInputs.count();
-    for (let i = 0; i < ic; i++) {
-      const inp = allInputs.nth(i);
-      const box = await inp.boundingBox().catch(() => null);
-      if (!box || box.width < 30 || box.width > 150 || box.y < 600 || box.y > 3000) continue;
-      const parentText = await inp.evaluate(el => {
-        let p = el.parentElement;
-        for (let d = 0; d < 5 && p; d++) {
-          if ((p.textContent || "").includes("品牌")) return true;
-          p = p.parentElement;
+    const result = await page.evaluate(async () => {
+      // Find all input-like elements near "品牌" label
+      const walkText = (el, depth) => {
+        if (depth > 8 || !el) return '';
+        let t = (el.textContent || '').trim();
+        if (t) return t;
+        return walkText(el.parentElement, depth + 1);
+      };
+
+      // Look for the brand container — usually a div with label "品牌"
+      const allElements = document.querySelectorAll('div, span, label, fieldset, section');
+      for (const el of allElements) {
+        const txt = (el.textContent || '').trim();
+        if (txt === '品牌' || txt === '品牌*' || txt === '*品牌') {
+          // Found brand label — look for nearby input/dropdown
+          let container = el.parentElement;
+          for (let d = 0; d < 6 && container; d++) {
+            // Check for Ant Design/Fusion select
+            const selectTrigger = container.querySelector('[class*="next-select-trigger"], [class*="ant-select-selector"], [class*="select-trigger"], [class*="dropdown-trigger"]');
+            if (selectTrigger) {
+              selectTrigger.click();
+              return { success: true, method: 'click-trigger' };
+            }
+            // Check for input
+            const inp = container.querySelector('input:not([type="hidden"])');
+            if (inp) {
+              const r = inp.getBoundingClientRect();
+              if (r.width > 20) {
+                inp.focus();
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(inp, '其他');
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'input-set-其他' };
+              }
+            }
+            container = container.parentElement;
+          }
         }
-        return false;
-      });
-      if (parentText) {
-        await inp.click();
-        await page.waitForTimeout(1000);
-        // Try to select first option from dropdown
-        const firstOption = page.locator("[class*="option"], [class*="menu-item"], [class*="select-item"], .next-menu-item, .next-select-item, li[class*="select"]").first();
-        if (await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await firstOption.click();
-        } else {
-          await inp.fill("其他");
-          await page.keyboard.press("Enter");
-        }
-        filled.brand = true;
-        console.log("[Taobao] Brand filled");
-        return;
       }
+      return { success: false };
+    });
+
+    if (result.success) {
+      filled.brand = true;
+      await page.waitForTimeout(1000);
+      // Try to select first option from dropdown that appeared
+      try {
+        const firstOpt = page.locator('[class*="next-menu-item"], [class*="ant-select-item-option"], [class*="select-option"]').first();
+        if (await firstOpt.count() > 0) {
+          await firstOpt.click().catch(() => {});
+        } else {
+          await page.keyboard.press('Enter');
+        }
+      } catch {}
+      console.log('[Taobao] ✓ Brand filled (' + result.method + ')');
+    } else {
+      console.log('[Taobao] Brand not found');
     }
-    console.log("[Taobao] Brand dropdown not found");
   } catch (e) {
-    console.log("[Taobao] Brand fill error:", e.message);
+    console.log('[Taobao] Brand fill error:', e.message);
   }
 }
+
 async function fillPackaging(page, filled) {
-  console.log('[Taobao] Filling packaging (dropdown)...');
+  console.log('[Taobao] Filling packaging...');
   try {
-    const allInputs = page.locator('input[placeholder*="请选择"]');
-    const ic = await allInputs.count();
-    for (let i = 0; i < ic; i++) {
-      const inp = allInputs.nth(i);
-      const box = await inp.boundingBox().catch(() => null);
-      if (!box || box.width < 100 || box.width > 300 || box.y < 500 || box.y > 2000) continue;
-      const parentText = await inp.evaluate(el => {
-        let p = el.parentElement;
-        for (let d = 0; d < 5 && p; d++) {
-          if ((p.textContent || "").includes("包装")) return true;
-          p = p.parentElement;
+    const result = await page.evaluate(async () => {
+      const allElements = document.querySelectorAll('div, span, label, fieldset, section');
+      for (const el of allElements) {
+        const txt = (el.textContent || '').trim();
+        if (txt === '包装方式' || txt === '包装方式*' || txt.includes('包装方式')) {
+          // Look for a select trigger nearby
+          let container = el.parentElement;
+          for (let d = 0; d < 6 && container; d++) {
+            const selectTrigger = container.querySelector('[class*="next-select-trigger"], [class*="ant-select-selector"], [class*="select-trigger"], [class*="dropdown-trigger"]');
+            if (selectTrigger) {
+              selectTrigger.click();
+              return { success: true, method: 'click-trigger' };
+            }
+            const inp = container.querySelector('input:not([type="hidden"])');
+            if (inp) {
+              const r = inp.getBoundingClientRect();
+              if (r.width > 20) {
+                inp.focus();
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(inp, '袋装');
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'input-袋装' };
+              }
+            }
+            container = container.parentElement;
+          }
         }
-        return false;
-      });
-      if (parentText) {
-        await inp.click();
-        await page.waitForTimeout(1000);
-        const firstOption = page.locator("[class*="option"], [class*="menu-item"], [class*="select-item"], .next-menu-item, .next-select-item, li[class*="select"]").first();
-        if (await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await firstOption.click();
-        } else {
-          await inp.fill("袋装");
-          await page.keyboard.press("Enter");
-        }
-        filled.packaging = true;
-        console.log("[Taobao] Packaging filled");
-        return;
       }
+      return { success: false };
+    });
+
+    if (result.success) {
+      filled.packaging = true;
+      await page.waitForTimeout(1000);
+      try {
+        const firstOpt = page.locator('[class*="next-menu-item"], [class*="ant-select-item-option"], [class*="select-option"]').first();
+        if (await firstOpt.count() > 0) {
+          await firstOpt.click().catch(() => {});
+        } else {
+          await page.keyboard.press('Enter');
+        }
+      } catch {}
+      console.log('[Taobao] ✓ Packaging filled (' + result.method + ')');
+    } else {
+      console.log('[Taobao] Packaging not found');
     }
-    console.log("[Taobao] Packaging dropdown not found");
   } catch (e) {
-    console.log("[Taobao] Packaging fill error:", e.message);
+    console.log('[Taobao] Packaging fill error:', e.message);
   }
 }
+
 async function fillOrigin(page, filled) {
   console.log('[Taobao] Filling origin...');
   try {
-    const allInputs = page.locator('input[placeholder*="请选择"]');
-    const ic = await allInputs.count();
-    for (let i = 0; i < ic; i++) {
-      const inp = allInputs.nth(i);
-      const box = await inp.boundingBox().catch(() => null);
-      if (!box || box.width < 100 || box.width > 300 || box.y < 500 || box.y > 2000) continue;
-      const parentText = await inp.evaluate(el => {
-        let p = el.parentElement;
-        for (let d = 0; d < 5 && p; d++) {
-          if ((p.textContent || "").includes("产地")) return true;
-          p = p.parentElement;
+    const result = await page.evaluate(async () => {
+      const allElements = document.querySelectorAll('div, span, label, fieldset, section');
+      for (const el of allElements) {
+        const txt = (el.textContent || '').trim();
+        if (txt === '产地' || txt === '产地*' || txt.includes('产地')) {
+          let container = el.parentElement;
+          for (let d = 0; d < 6 && container; d++) {
+            const selectTrigger = container.querySelector('[class*="next-select-trigger"], [class*="ant-select-selector"], [class*="select-trigger"], [class*="dropdown-trigger"]');
+            if (selectTrigger) {
+              selectTrigger.click();
+              return { success: true, method: 'click-trigger' };
+            }
+            const inp = container.querySelector('input:not([type="hidden"])');
+            if (inp) {
+              const r = inp.getBoundingClientRect();
+              if (r.width > 20) {
+                inp.focus();
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(inp, '安徽');
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'input-安徽' };
+              }
+            }
+            container = container.parentElement;
+          }
         }
-        return false;
-      });
-      if (parentText) {
-        await inp.click();
-        await page.waitForTimeout(1000);
-        const firstOption = page.locator("[class*="option"], [class*="menu-item"], [class*="select-item"], .next-menu-item, .next-select-item, li[class*="select"]").first();
-        if (await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await firstOption.click();
-        } else {
-          await inp.fill("安徽");
-          await page.keyboard.press("Enter");
-        }
-        filled.origin = true;
-        console.log("[Taobao] Origin filled");
-        return;
       }
+      return { success: false };
+    });
+
+    if (result.success) {
+      filled.origin = true;
+      await page.waitForTimeout(1000);
+      try {
+        const firstOpt = page.locator('[class*="next-menu-item"], [class*="ant-select-item-option"], [class*="select-option"]').first();
+        if (await firstOpt.count() > 0) {
+          await firstOpt.click().catch(() => {});
+        } else {
+          await page.keyboard.press('Enter');
+        }
+      } catch {}
+      console.log('[Taobao] ✓ Origin filled (' + result.method + ')');
+    } else {
+      console.log('[Taobao] Origin not found');
     }
-    console.log("[Taobao] Origin dropdown not found");
   } catch (e) {
-    console.log("[Taobao] Origin fill error:", e.message);
+    console.log('[Taobao] Origin fill error:', e.message);
   }
 }
+
 async function fillFreight(page, filled) {
   console.log('[Taobao] Filling freight template...');
   try {
-    // Diagnostic: "运费模板" label exists at top=2623
-    // Try clicking the label or nearby button
-    const freightLabels = ['运费模板', '运费', '物流'];
-    for (const label of freightLabels) {
-      const el = page.locator(`text="${label}"`).first();
-      if (await el.count() > 0 && await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-        // Click the label first to focus the section
-        await el.click();
-        await page.waitForTimeout(800);
-
-        // Look for dropdown options that appeared
-        const options = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"], li[class*="select"], .next-menu-item, .next-select-item');
-        const optCount = await options.count();
-        if (optCount > 0) {
-          await options.first().click();
-          await page.waitForTimeout(500);
-          filled.freight = true;
-          console.log('[Taobao] ✓ Freight template selected');
-          return;
-        }
-
-        // If no dropdown, try clicking the parent container (might be a link/button)
-        const parentBtn = el.locator('..').locator('a, button, [class*="edit"], [class*="btn"]').first();
-        if (await parentBtn.count() > 0) {
-          await parentBtn.click();
-          await page.waitForTimeout(800);
-          const opts2 = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"]');
-          if (await opts2.count() > 0 && await opts2.first().isVisible({ timeout: 2000 }).catch(() => false)) {
-            await opts2.first().click();
-            filled.freight = true;
-            console.log('[Taobao] ✓ Freight: selected via parent button');
-            return;
+    const result = await page.evaluate(async () => {
+      const allElements = document.querySelectorAll('div, span, label, fieldset, section');
+      for (const el of allElements) {
+        const txt = (el.textContent || '').trim();
+        if (txt === '运费模板' || txt === '运费模板*' || txt.includes('运费模板') || txt.includes('物流')) {
+          let container = el.parentElement;
+          for (let d = 0; d < 6 && container; d++) {
+            // Try clicking the container itself first
+            const clickable = container.querySelector('a, button, [class*="edit"], [class*="btn"], [class*="select"], [class*="picker"]');
+            if (clickable) {
+              clickable.click();
+              return { success: true, method: 'click-edit' };
+            }
+            const selectTrigger = container.querySelector('[class*="next-select-trigger"], [class*="ant-select-selector"]');
+            if (selectTrigger) {
+              selectTrigger.click();
+              return { success: true, method: 'click-trigger' };
+            }
+            container = container.parentElement;
           }
         }
-
-        // Last resort: type "包邮"
-        await page.keyboard.type('包邮', { delay: 50 });
-        await page.keyboard.press('Enter');
-        filled.freight = true;
-        console.log('[Taobao] ✓ Freight (typed): 包邮');
-        return;
       }
-    }
+      return { success: false };
+    });
 
-    // Try clicking the edit area directly
-    console.log('[Taobao] Freight: trying direct area click...');
-    const freightArea = page.locator('[class*="freight"], [class*="Freight"], [class*="logistics"], [class*="Logistics"], [class*="delivery"]').first();
-    if (await freightArea.count() > 0 && await freightArea.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await freightArea.click();
-      await page.waitForTimeout(800);
-      const opts = page.locator('[class*="option"], [class*="menu-item"], [class*="select-item"], li[class*="select"]');
-      if (await opts.count() > 0) {
-        await opts.first().click();
-        filled.freight = true;
-        console.log('[Taobao] ✓ Freight: selected via area click');
-        return;
-      }
+    if (result.success) {
+      filled.freight = true;
+      await page.waitForTimeout(1000);
+      try {
+        const firstOpt = page.locator('[class*="next-menu-item"], [class*="ant-select-item-option"], [class*="select-option"]').first();
+        if (await firstOpt.count() > 0) {
+          await firstOpt.click().catch(() => {});
+        } else {
+          await page.keyboard.press('Enter');
+        }
+      } catch {}
+      console.log('[Taobao] ✓ Freight filled (' + result.method + ')');
+    } else {
+      console.log('[Taobao] Freight not found');
     }
-    console.log('[Taobao] Freight fill failed');
   } catch (e) {
     console.log('[Taobao] Freight fill error:', e.message);
   }
@@ -973,30 +1064,26 @@ async function fillDescription(page, desc, filled) {
 }
 
 // ============================================================
-// Image upload
+// Image upload — Taobao publish page
 // ============================================================
 /**
+ * Upload images to the Taobao publish page.
  *
- * BREAKTHROUGH (2026-06-13): The previous 7 strategies all failed because
- * they searched for file inputs in the main page DOM. Taobao's image upload
- * actually lives inside a cross-origin iframe (sucai-selector-ng).
+ * Taobao's image upload flow (observed on v2 publish page):
+ *   1. There's a grid of upload slots (class ~ "material-item-view" or similar)
+ *   2. Clicking a slot opens the image picker dialog (iframe: sucai-selector-ng)
+ *   3. Inside the iframe, click "本地上传" → file chooser opens
+ *   4. After selecting file, the image uploads and a thumbnail appears
+ *   5. Click "完成" to apply
  *
- * This function navigates the iframe workflow:
- *   1. Click each upload slot (.item-medium or .sell-component-image-v2)
- *   2. In the opened iframe, click "本地上传" (triggers fileChooser)
- *   3. Upload the local image file via Playwright's fileChooser API
- *   4. Click the uploaded image name to select it
- *   5. Click "完成" to close the dialog and apply the image
+ * Strategy A: Direct file input via Playwright fileChooser
+ *   - Set up fileChooser listener, click upload button that triggers it
  *
- * Known caveats:
- *   - The iframe is at market.m.taobao.com (cross-origin), so we use
- *     Playwright frame locators instead of raw DOM access.
- *   - File inputs inside the iframe are dynamically created on each click.
- *   - Upload order: 1:1主图 (5 slots) first, then 3:4主图 (5 slots).
+ * Strategy B: Find hidden <input type="file"> and set its files
+ *
+ * Strategy C: Use the iframe approach — navigate the sucai-selector-ng iframe
  */
 async function uploadImagesViaIframe(page, imagePaths) {
-  const { existsSync, mkdirSync, writeFileSync, rmSync } = await import('fs');
-  const { join } = await import('path');
   const downloadDir = join(PROJECT_ROOT, 'data', 'temp-images');
   if (!existsSync(downloadDir)) mkdirSync(downloadDir, { recursive: true });
 
@@ -1026,77 +1113,134 @@ async function uploadImagesViaIframe(page, imagePaths) {
     return;
   }
 
-  // Strategy A: Click upload slots on the publish page
-  // Look for image upload area (could be various selectors)
-  const uploadSelectors = [
-    '.sell-component-material-item-view',        // new publish page
-    '.upload-picture-item',                       // alternative
-    '[class*="upload"] [class*="image"]',        // generic
-    '[class*="material"] [class*="item"]',       // generic
-  ];
+  console.log('[Taobao] Downloaded ' + localPaths.length + ' images to ' + downloadDir);
 
-  let slots = null;
-  for (const sel of uploadSelectors) {
-    const c = await page.locator(sel).count();
-    if (c > 0) { slots = page.locator(sel); console.log('[Taobao] Found ' + c + ' slots with: ' + sel); break; }
-  }
-
-  if (!slots) {
-    console.log('[Taobao] No upload slots found, trying direct file upload...');
-  }
-
-  // Try uploading each image
-  for (let i = 0; i < localPaths.length && i < 10; i++) {
+  // ── Strategy A: page.evaluate() DOM traversal to find upload elements ──
+  // Taobao publish page uses dynamically generated DOM. We need to search inside
+  // to find the image upload area and its slots.
+  let uploaded = 0;
+  for (let i = 0; i < Math.min(localPaths.length, 10); i++) {
     const localPath = localPaths[i];
     if (!existsSync(localPath)) continue;
-    console.log('[Taobao] Uploading image ' + (i + 1) + '/' + localPaths.length);
 
     try {
-      // Method 1: Click slot, then use fileChooser
-      if (slots) {
-        const slot = slots.nth(i);
-        if (await slot.count() > 0) {
-          await slot.click({ force: true });
-          await page.waitForTimeout(1500);
+      // Step 1: Click an upload slot via DOM evaluation
+      console.log('[Taobao] Uploading image ' + (i + 1) + '/' + localPaths.length);
+      const clickResult = await page.evaluate(async (slotIndex) => {
+        // Look for image upload slots — various known Taobao patterns
+        const selectors = [
+          '.sell-component-material-item-view',
+          '[class*="material-item-view"]',
+          '[class*="upload-picture-item"]',
+          '[class*="image-uploader"]',
+          '.ant-upload-select',
+          '[class*="ant-upload"]',
+          '.next-upload',
+          '[class*="next-upload"]',
+        ];
+
+        for (const sel of selectors) {
+          const items = document.querySelectorAll(sel);
+          if (items.length > slotIndex) {
+            const target = items[slotIndex];
+            // Check not already filled
+            if (!target.querySelector('img')) {
+              target.click();
+              return { clicked: true, selector: sel };
+            }
+          }
         }
-      }
+        return { clicked: false };
+      }, i);
 
-      // Method 2: Try fileChooser by clicking any visible "本地上传" / "上传" button
-      const uploadBtn = page.getByText('本地上传', { exact: false }).or(page.getByText('上传图片')).or(page.getByText('上传文件')).first();
-      let fileChooser = null;
-      if (await uploadBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        const [fc] = await Promise.all([
-          page.waitForEvent('filechooser', { timeout: 10000 }).catch(() => null),
-          uploadBtn.click().catch(() => {})
-        ]);
-        fileChooser = fc;
+      if (!clickResult.clicked) {
+        console.log('[Taobao] No upload slot found for image ' + (i + 1));
       }
+      await page.waitForTimeout(2000);
 
-      if (fileChooser) {
-        await fileChooser.setFiles(localPath);
-        await page.waitForTimeout(3000);
-        console.log('[Taobao] Image ' + (i + 1) + ' uploaded via fileChooser');
-      } else {
-        // Method 3: Try any visible file input
-        const fileInput = page.locator('input[type="file"]:visible').first();
-        if (await fileInput.count() > 0) {
-          await fileInput.setInputFiles(localPath);
-          await page.waitForTimeout(3000);
-          console.log('[Taobao] Image ' + (i + 1) + ' uploaded via file input');
-        } else {
-          // Method 4: Try hidden file inputs
-          const hiddenInput = page.locator('input[type="file"]').first();
-          if (await hiddenInput.count() > 0) {
-            await hiddenInput.setInputFiles(localPath);
-            await page.waitForTimeout(3000);
-            console.log('[Taobao] Image ' + (i + 1) + ' uploaded via hidden file input');
-          } else {
-            console.log('[Taobao] Image ' + (i + 1) + ' - no upload mechanism found');
+      // Step 2: Set up fileChooser event
+      const fileChooserPromise = page.waitForEvent('filechooser', { timeout: 15000 }).catch(() => null);
+
+      // Step 3: Click "本地上传" button — look in main page and iframes
+      const uploadClickResult = await page.evaluate(() => {
+        // Try clicking text "本地上传" in the page
+        const allEls = document.querySelectorAll('button, a, span, div, li');
+        for (const el of allEls) {
+          const t = (el.textContent || '').trim();
+          if (t === '本地上传' || t === '上传图片') {
+            if (el.offsetParent !== null) {
+              el.click();
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+
+      if (!uploadClickResult) {
+        // Try in iframes
+        const frames = page.frames();
+        for (const frame of frames) {
+          const url = frame.url();
+          if (url.includes('sucai') || url.includes('upload') || url.includes('material') || url.includes('image') || url.includes('taobao')) {
+            try {
+              const clicked = await frame.evaluate(() => {
+                const allEls = document.querySelectorAll('button, a, span, div, li');
+                for (const el of allEls) {
+                  const t = (el.textContent || '').trim();
+                  if (t === '本地上传' || t === '上传图片') {
+                    if (el.offsetParent !== null) {
+                      el.click();
+                      return true;
+                    }
+                  }
+                }
+                return false;
+              });
+              if (clicked) {
+                console.log('[Taobao] Clicked upload in iframe: ' + url.substring(0, 60));
+                break;
+              }
+            } catch {}
           }
         }
       }
 
-      // Try to close any modal/dialog
+      // Step 4: Wait for fileChooser or try direct file input
+      let fc = await fileChooserPromise;
+      if (fc) {
+        await fc.setFiles(localPath);
+        await page.waitForTimeout(3000);
+        uploaded++;
+        console.log('[Taobao] ✓ Image ' + (i + 1) + ' via fileChooser');
+      } else {
+        // Try direct file input via DOM
+        const fileInputResult = await page.evaluate(async (path) => {
+          // Try to find any file input
+          const fileInputs = document.querySelectorAll('input[type="file"]');
+          if (fileInputs.length > 0) {
+            // Can't set files from evaluate due to security restrictions
+            return { found: fileInputs.length, canSet: false };
+          }
+          // Try iframes
+          return { found: 0 };
+        }, localPath);
+
+        if (fileInputResult.found > 0) {
+          // Use Playwright's setInputFiles on the first file input
+          const fi = page.locator('input[type="file"]').first();
+          if (await fi.count() > 0) {
+            await fi.setInputFiles(localPath);
+            await page.waitForTimeout(3000);
+            uploaded++;
+            console.log('[Taobao] ✓ Image ' + (i + 1) + ' via direct file input');
+          }
+        } else {
+          console.log('[Taobao] ✗ Image ' + (i + 1) + ' — no upload mechanism');
+        }
+      }
+
+      // Close dialog
       await page.keyboard.press('Escape').catch(() => {});
       await page.waitForTimeout(500);
     } catch (e) {
@@ -1104,14 +1248,16 @@ async function uploadImagesViaIframe(page, imagePaths) {
       await page.keyboard.press('Escape').catch(() => {});
       await page.waitForTimeout(500);
     }
-
-    // Clean downloaded temp file
-    if (localPath !== imagePaths[localPaths.indexOf(localPath)] && existsSync(localPath)) {
-      try { rmSync(localPath); } catch {}
-    }
   }
 
-  console.log('[Taobao] Image upload process completed');
+  console.log('[Taobao] Image upload complete: ' + uploaded + '/' + Math.min(localPaths.length, 10) + ' uploaded');
+
+  // Cleanup temp files
+  for (const lp of localPaths) {
+    if (existsSync(lp)) {
+      try { rmSync(lp); } catch {}
+    }
+  }
 }
 
 function parseImages(imagesField) {
@@ -1216,13 +1362,18 @@ async function submitAndVerify(page) {
 // ============================================================
 // Main batch listing orchestrator
 // ============================================================
-export async function batchListToTaobao(products, overrideCategory, overridePrices) {
+export async function batchListToTaobao(products, overrideCategory, overridePrices, options = {}) {
+  const { onProgress } = options;
+  const _progress = (msg) => { if (onProgress) onProgress(msg); };
+
+  _progress(`启动浏览器: ${products.length} 件商品`);
   console.log(`[Taobao] Starting batch listing ${products.length} products...`);
 
   const context = await launchContext();
   const page = context.pages()[0] || await context.newPage();
 
-    // Login check — wait for redirects to settle
+  _progress('浏览器已启动，正在检查登录状态...');
+  // Login check — wait for redirects to settle
   console.log('[Taobao] Checking login status...');
   const loginErr2 = await page.goto('https://qn.taobao.com/home.html/SellManage/on_sale?current=1&pageSize=20', {
     waitUntil: 'domcontentloaded', timeout: 30000,
@@ -1239,6 +1390,7 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
   if (!isLoggedIn2) {
     if (finalUrl2.includes('login') || finalUrl2.includes('passport')) {
       console.log('[Taobao] Login required - please scan QR code...');
+      _progress('⏳ 需要扫码登录淘宝，请在打开浏览器中扫码...');
     }
     try {
       await page.waitForFunction(() => {
@@ -1247,12 +1399,16 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
       }, { timeout: 300000, polling: 3000 });
       await page.waitForTimeout(3000);
       console.log('[Taobao] Login completed');
+      _progress('✓ 登录成功！');
     } catch(e) {
       console.log('[Taobao] Login timeout:', e.message);
     }
   } else {
     console.log('[Taobao] Already logged in');
+    _progress('✓ 已登录');
   }
+
+  _progress('开始处理商品...');
 
 // Process each product
   const results = [];
@@ -1264,71 +1420,66 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
     // If overrideCategory contains a path like "茶>代用/花草/水果/再加工茶>组合型花茶", extract the last segment
     let cat = overrideCategory || resolveCategory(p);
     if (cat.includes('>')) {
-      const parts = cat.split('>').map(s => s.trim()).filter(Boolean);
-      cat = parts[parts.length - 1];
-      console.log(`[Taobao] Extracted leaf category from path: "${cat}"`);
+      // Store the FULL path — we'll use it for AI category search, not just leaf
+      console.log(`[Taobao] Full category path: "${cat}"`);
     }
     initLog(`product_${p.id}_${Date.now()}`);
     console.log(`\n[Taobao] (${i + 1}/${products.length}) ${title} [类目: ${cat}]`);
+    _progress(`[${i + 1}/${products.length}] ${title.substring(0, 30)}...`);
 
     const productResult = { id: p.id, title, success: false, message: '' };
 
     try {
-      // DIRECT: Skip AI category search, go straight to publish page
-      // Use catId map from known successful searches (花茶 → 125242010)
-      const CATEGORY_CAT_IDS = {
-        '花茶': '125242010',
-        '药食同源': '125242011',
-        '滋补品': '125242012',
-        '茶叶': '125242013',
-        '组合型花茶': '125242014',
-        '食品': '125242015',
-        '手机配件': '125242016',
-        '收纳用品': '125242017',
-        '其他': '50008168',
-      };
-      const catId = CATEGORY_CAT_IDS[cat] || '50008168';
-      console.log(`[Taobao] Skipping AI category search for "${cat}", going to publish page catId=${catId}`);
-      await page.goto(`https://item.upload.taobao.com/sell/v2/publish.htm?catId=${catId}&fromAICategory=true`, {
-        waitUntil: 'domcontentloaded', timeout: 30000,
-      }).catch(e => console.log('[Taobao] Publish nav error:', e.message));
-      await page.waitForTimeout(8000);
-      const pubUrlStage = page.url();
-      console.log(`[Taobao] Publish page URL: ${pubUrlStage}`);
-
-      // Fallback: if redirected to login, try old category search
+      // Strategy: If user provided category path, use AI category search with the
+      // full path as the search keyword (e.g., "汽车零部件/养护/美容/维保>>阿里车码头汽车服务>>全车检测服务")
+      // This is more reliable than trying to map to a hardcoded catId.
+      // The path segments are used as search keywords in sequence.
+      const useCategorySearch = cat.includes('>') || !CATEGORY_CAT_IDS[cat];
       let catOk = false;
-      if (pubUrlStage.includes('login') || pubUrlStage.includes('passport') || pubUrlStage.includes('category')) {
-        console.log('[Taobao] Direct nav failed, falling back to AI category search...');
-        const navErr2 = await page.goto(`https://item.upload.taobao.com/sell/ai/category.htm?force=true`, {
+
+      if (useCategorySearch) {
+        console.log(`[Taobao] Using AI category search for "${cat}"...`);
+        _progress(`搜索淘宝类目: ${cat}...`);
+        await page.goto('https://item.upload.taobao.com/sell/ai/category.htm?force=true', {
           waitUntil: 'domcontentloaded', timeout: 30000,
-        }).catch(e => e);
-        if (navErr2) console.log('[Taobao] Fallback nav error:', navErr2.message);
-        await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
-        await page.waitForTimeout(2000);
-        catOk = await searchAndSelectCategory(page, cat);
-        await logStep(page, 'category-done', catOk ? 'success' : 'failed', { cat });
-        if (!catOk) {
-          console.log('[Taobao] Category search failed too, waiting for manual redirect...');
-          try {
-            await page.waitForFunction(
-              () => {
-                const u = window.location.href;
-                return u.includes('publish') && !u.includes('category') && !u.includes('router');
-              },
-              { timeout: 120000, polling: 2000 }
-            );
-          } catch (e) {
-            console.log('[Taobao] Redirect timeout:', e.message);
+        }).catch(e => console.log('[Taobao] Category page nav error:', e.message));
+        await page.waitForTimeout(3000);
+
+        // Try search with various keywords derived from the category path
+        // If path is "汽车零部件/养护/美容/维保>>阿里车码头汽车服务>>全车检测服务"
+        // Try: "全车检测服务" (leaf) then "阿里车码头" then "汽车零部件"
+        const catSegments = cat.split('>').map(s => s.trim()).filter(Boolean);
+        const searchKeywords = [
+          catSegments[catSegments.length - 1],                             // leaf
+          catSegments.length > 1 ? catSegments[catSegments.length - 2] : '', // parent
+          catSegments[0],                                                   // root
+        ].filter(Boolean);
+
+        for (const kw of searchKeywords) {
+          console.log(`[Taobao] AI search with keyword: "${kw}"`);
+          catOk = await searchAndSelectCategory(page, kw);
+          if (catOk) {
+            console.log(`[Taobao] ✓ Category found with keyword: "${kw}"`);
+            break;
           }
         }
-      } else if (pubUrlStage.includes('publish')) {
-        catOk = true;
+      } else {
+        // Direct catId jump (only for known categories)
+        const catId = CATEGORY_CAT_IDS[cat];
+        console.log(`[Taobao] Skipping AI search, using catId=${catId} for "${cat}"`);
+        _progress(`跳转到淘宝发布页 (类目: ${cat})...`);
+        await page.goto(`https://item.upload.taobao.com/sell/v2/publish.htm?catId=${catId}&fromAICategory=true`, {
+          waitUntil: 'domcontentloaded', timeout: 30000,
+        }).catch(e => console.log('[Taobao] Publish nav error:', e.message));
+        await page.waitForTimeout(8000);
+        const pubUrl = page.url();
+        catOk = pubUrl.includes('publish') && !pubUrl.includes('category');
       }
 
       // Fill form only if on publish page
       const currentUrl = page.url();
       if (currentUrl.includes('publish') && !currentUrl.includes('category')) {
+        _progress('正在填写商品信息（标题/价格/库存/品牌等）...');
         let fillResult = { title: false, price: false, qty: false };
         try {
           fillResult = await withTimeout(fillForm(page, title, price, p.description || '', p), 60000, '表单填写');
@@ -1339,6 +1490,7 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
         await logStep(page, 'form-done', fillResult.title && fillResult.price ? 'ok' : 'partial', fillResult);
         console.log(`[Taobao] Form: title=${fillResult.title} price=${fillResult.price} qty=${fillResult.qty}`);
 
+        _progress('正在提交到淘宝...');
         // Submit
         let submitResult = { success: false, message: '未执行提交' };
         try {
@@ -1355,13 +1507,18 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
 
         if (submitResult.success) {
           console.log(`[Taobao] ✓ Published: ${title}`);
+          _progress(`✓ 上架成功: ${title.substring(0, 24)}`);
         } else {
           console.log(`[Taobao] ✗ Failed: ${title} — ${submitResult.message}`);
+          _progress(`✗ 上架失败: ${title.substring(0, 20)} — ${submitResult.message.substring(0, 30)}`);
         }
       } else {
         console.log(`[Taobao] Not on publish page: ${currentUrl}`);
         productResult.message = '未到达发布页面，请检查类目选择';
       }
+
+      // Log category status
+      await logStep(page, 'category-done', catOk ? 'success' : 'failed', { cat, url: page.url() });
     } catch (err) {
       console.log(`[Taobao] Error:`, err.message);
       productResult.message = err.message;
@@ -1379,6 +1536,18 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
 
   const successCount = results.filter(r => r.success).length;
   console.log(`\n[Taobao] Done: ${successCount}/${products.length} published`);
+
+  // Close browser context to flush state
+  try {
+    await context.close();
+    console.log('[Taobao] Browser context closed');
+  } catch (e) {
+    console.log('[Taobao] Browser close error:', e.message);
+  }
+
+  // Sync profile data back so login persists
+  copyProfileBack();
+
   return {
     success: successCount > 0,
     message: `${successCount}/${products.length} 件商品上架成功`,

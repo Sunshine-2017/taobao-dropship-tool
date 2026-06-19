@@ -3,8 +3,7 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { getDb } from '../sqlite.js';
 import { generateTaobaoCSV } from '../services/taobao-csv.js';
-// @ts-expect-error — JS module, will be migrated to TS soon
-import { batchListToTaobao } from '../services/taobao-auto-list.js';
+import { startAutoListTask, getTaskStatus, cancelTask } from '../services/auto-list-runner.js';
 import type { Listing, Product } from '../db.js';
 
 const router = Router();
@@ -135,7 +134,7 @@ router.get('/auto-list-status', async (_req: Request, res: Response) => {
   });
 });
 
-// ── Auto-list to Taobao ──────────────────────────────────────────
+// ── Auto-list to Taobao (background) ────────────────────────────────
 router.post('/auto-list', async (req: Request, res: Response) => {
   const d = getDb();
   const { productIds, category: overrideCategory, prices: overridePrices } = req.body;
@@ -151,27 +150,22 @@ router.post('/auto-list', async (req: Request, res: Response) => {
   }
   if (products.length === 0) return res.status(400).json({ error: '未找到有效商品' });
 
-  try {
-    const result = await batchListToTaobao(products, overrideCategory, overridePrices);
+  // Start background task and return taskId immediately
+  const { taskId } = startAutoListTask(products, overrideCategory || null, overridePrices || null);
+  res.json({ ok: true, taskId, message: '上架任务已启动', productCount: products.length });
+});
 
-    const insertStmt = d.prepare("INSERT INTO listings (product_id, taobao_item_id, status, csv_path, listed_at, created_at) VALUES (?, ?, ?, NULL, ?, datetime('now'))");
-    const updateStmt = d.prepare(`UPDATE my_products SET status = ?, updated_at = datetime('now') WHERE id = ?`);
+// ── Poll auto-list task status ───────────────────────────────────────
+router.get('/auto-list-task/:taskId', (req: Request, res: Response) => {
+  const task = getTaskStatus(String(req.params.taskId));
+  if (!task) return res.status(404).json({ error: '任务不存在' });
+  res.json(task);
+});
 
-    const tx = d.transaction(() => {
-      for (const pr of (result.results || [])) {
-        const product = products.find(p => p.id === pr.id);
-        if (!product) continue;
-        insertStmt.run(product.id, pr.taobaoItemId || null, pr.success ? 'listed' : 'failed', pr.success ? "datetime('now')" : null);
-        updateStmt.run(pr.success ? 'listed' : 'draft', product.id);
-      }
-    });
-    tx();
-
-    res.json(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ success: false, message });
-  }
+// ── Cancel auto-list task ───────────────────────────────────────────
+router.post('/auto-list-task/:taskId/cancel', (req: Request, res: Response) => {
+  const ok = cancelTask(String(req.params.taskId));
+  res.json({ ok, message: ok ? '正在取消' : '任务不存在或已完成' });
 });
 
 export default router;
