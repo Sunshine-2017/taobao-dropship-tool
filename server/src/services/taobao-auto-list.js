@@ -25,6 +25,19 @@ const USER_DATA_DIR = process.env.TAOBAO_PROFILE_DIR || join(PROJECT_ROOT, 'data
 const SCREENSHOT_DIR = join(PROJECT_ROOT, 'data', 'screenshots');
 const LOG_DIR = join(PROJECT_ROOT, 'data', 'logs');
 
+// Category catId map — for known categories, skip AI search and jump directly to publish page
+const CATEGORY_CAT_IDS = {
+  '花茶': '125242010',
+  '药食同源': '125242011',
+  '滋补品': '125242012',
+  '茶叶': '125242013',
+  '组合型花茶': '125242014',
+  '食品': '125242015',
+  '手机配件': '125242016',
+  '收纳用品': '125242017',
+  '其他': '50008168',
+};
+
 // Helper: wrap a promise with a timeout
 function withTimeout(promise, ms, label = '操作') {
   return Promise.race([
