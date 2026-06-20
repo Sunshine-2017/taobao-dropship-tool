@@ -1443,50 +1443,40 @@ export async function batchListToTaobao(products, overrideCategory, overridePric
     const productResult = { id: p.id, title, success: false, message: '' };
 
     try {
-      // Extract leaf category from path like "茶>代用/花草/水果/再加工茶>组合型花茶" → "组合型花茶"
+      // CRITICAL: Do NOT use catId direct jump. All catId values in CATEGORY_CAT_IDS
+      // are fabricated and not real Taobao category IDs. Using them causes Taobao to
+      // return a default category (e.g. "auto parts") instead of the intended one.
+      //
+      // Always use AI category search with the user's category keywords.
       const catSegments = cat.split('>').map(s => s.trim()).filter(Boolean);
-      const leafCat = catSegments[catSegments.length - 1] || cat;
       let catOk = false;
 
-      // PRIORITY 1: Try direct catId jump if leaf category is in known map
-      const catId = CATEGORY_CAT_IDS[leafCat];
-      if (catId) {
-        console.log(`[Taobao] Direct catId=${catId} for leaf "${leafCat}" from "${cat}"`);
-        _progress(`跳转到淘宝发布页 (类目: ${leafCat})...`);
-        await page.goto(`https://item.upload.taobao.com/sell/v2/publish.htm?catId=${catId}&fromAICategory=true`, {
-          waitUntil: 'domcontentloaded', timeout: 30000,
-        }).catch(e => console.log('[Taobao] Publish nav error:', e.message));
-        await page.waitForTimeout(8000);
-        const pubUrl = page.url();
-        catOk = pubUrl.includes('publish') && !pubUrl.includes('category');
-        console.log(`[Taobao] Direct catId result: url=${pubUrl} onPublish=${catOk}`);
-      }
+      console.log(`[Taobao] AI category search for "${cat}"...`);
+      _progress(`搜索淘宝类目...`);
+      await page.goto('https://item.upload.taobao.com/sell/ai/category.htm?force=true', {
+        waitUntil: 'domcontentloaded', timeout: 30000,
+      }).catch(e => console.log('[Taobao] Category page nav error:', e.message));
+      await page.waitForTimeout(3000);
 
-      // PRIORITY 2: If catId jump failed or not available, try AI category search
-      if (!catOk) {
-        console.log(`[Taobao] AI category search for "${cat}"...`);
-        _progress(`搜索淘宝类目: ${leafCat}...`);
-        await page.goto('https://item.upload.taobao.com/sell/ai/category.htm?force=true', {
-          waitUntil: 'domcontentloaded', timeout: 30000,
-        }).catch(e => console.log('[Taobao] Category page nav error:', e.message));
-        await page.waitForTimeout(3000);
+      // Try search with various keywords derived from the category path
+      // If path is "茶>代用/花草/水果/再加工茶>组合型花茶"
+      // Try: "组合型花茶" (leaf) then "代用/花草/水果/再加工茶" (parent) then "茶" (root)
+      const searchKeywords = [
+        catSegments[catSegments.length - 1],                             // leaf
+        catSegments.length > 1 ? catSegments[catSegments.length - 2] : '', // parent
+        catSegments[0],                                                   // root
+      ].filter(Boolean);
 
-        // Try search with various keywords derived from the category path
-        const searchKeywords = [
-          catSegments[catSegments.length - 1],                             // leaf
-          catSegments.length > 1 ? catSegments[catSegments.length - 2] : '', // parent
-          catSegments[0],                                                   // root
-        ].filter(Boolean);
-
-        for (const kw of searchKeywords) {
-          console.log(`[Taobao] AI search with keyword: "${kw}"`);
-          catOk = await searchAndSelectCategory(page, kw);
-          if (catOk) {
-            console.log(`[Taobao] ✓ Category found with keyword: "${kw}"`);
-            break;
-          }
+      for (const kw of searchKeywords) {
+        console.log(`[Taobao] AI search with keyword: "${kw}"`);
+        _progress(`搜索类目: ${kw}...`);
+        catOk = await searchAndSelectCategory(page, kw);
+        if (catOk) {
+          console.log(`[Taobao] ✓ Category found with keyword: "${kw}"`);
+          break;
         }
       }
+      await logStep(page, 'category-done', catOk ? 'success' : 'failed', { cat, url: page.url() });
 
       // Fill form only if on publish page
       const currentUrl = page.url();
