@@ -229,3 +229,74 @@ taskkill //F //PID <PID>
 5. 服务启动后保持运行，Codex 测试时不重启服务（除非代码有改动）
 6. 测试截图和日志在 `server/data/screenshots/` 和 `server/data/logs/`
 7. Codex 完成后在 `.codex-review.md` 末尾写结果，标记 `DONE - Codex`
+
+---
+
+## 当前问题清单（按优先级排列）
+
+> 最后更新：2026-06-20 08:50（基于 product_3 上架测试日志）
+
+### 🔴 P0 - 阻塞性 bug
+
+| # | 问题 | 现象 | 根因 | 状态 |
+|---|------|------|------|------|
+| B1 | **类目走到"汽车零部件/养护/美容/维保"** | 上架后淘宝发布页显示的类目是"汽车零部件>>全车检测服务"，不是用户填的"花茶/组合型花茶" | 类目选择时虽然 catId 直跳成功（`category-done.json` 显示 `catId=125242014` `status=success`），但淘宝将其重定向到了不相干的默认类目。catId 可能是错误的或已过期。 | ⚠️ 待修复 |
+| B2 | **包装方式未填写** | `form-done.json` 显示 `packaging: false` | page.evaluate 按"包装方式"标签文本搜索不到对应的选择器 trigger | ⚠️ 待修复 |
+| B3 | **产地未填写** | `form-done.json` 显示 `origin: false` | page.evaluate 按"产地"标签文本搜索不到对应的选择器 trigger | ⚠️ 待修复 |
+| B4 | **1:1主图未上传** | 提交报"1:1主图不能为空"，但 `form-done.json` 显示 `images: true` | images:true 可能误报（代码走了 else 分支未真正上传），或者上传了但页面不认 | ⚠️ 待修复 |
+
+### 🟡 P1 - 已知但未验证
+
+| # | 问题 | 状态 |
+|---|------|------|
+| V1 | 品牌字段填写（`brand: true`）是否真的选对了值 | 需 E2E 验证 |
+| V2 | 运费模板字段填写（`freight: true`）是否真的选对了值 | 需 E2E 验证 |
+| V3 | 图片上传的多策略（fileChooser / file input / iframe）哪条路径实际生效 | 需 E2E 验证 |
+| V4 | catId 直跳是否在淘宝侧仍然有效（125242010 系列 ID 来源不明） | 需验证 |
+
+### 🟢 P2 - 已解决/已记录
+
+| # | 问题 | 解决方案 |
+|---|------|---------|
+| R1 | `CATEGORY_CAT_IDS is not defined` | 映射表提到文件顶层 |
+| R2 | `searchSource is not a function` | 导入重命名 `searchSourceAPI` |
+| R3 | 中文关键词乱码 | decodeURIComponent |
+| R4 | 1688真实搜索被强制登录 | 改为始终用mock数据 |
+| R5 | 类目路径跳过catId直跳 | 优先查映射表再AI搜索 |
+
+### 📝 B1 详细分析（2026-06-20）
+
+**用户操作**：填类目 `茶>代用/花草/水果/再加工茶>组合型花茶`，点一键上架
+
+**程序行为**：
+1. 提取叶子类目 "组合型花茶" → 查 CATEGORY_CAT_IDS → 得到 catId=125242014
+2. 跳转 `https://item.upload.taobao.com/sell/v2/publish.htm?catId=125242014&fromAICategory=true`
+3. category-done.json 显示 `status=success`，URL 确实在 publish.htm
+4. **但淘宝发布页实际显示的类目是"汽车零部件/养护/美容/维保>>阿里车码头汽车服务>>全车检测服务"**
+
+**结论**：catId=125242014 不是有效类目ID，淘宝返回了默认的"全车检测服务"类目。CATEGORY_CAT_IDS 中的所有 catId 可能都是伪造/过期的。
+
+**需要的修复方向**：不再依赖硬编码 catId，改为始终走淘宝 AI 类目搜索页，用关键词搜索。或者通过实际搜索花茶类目从淘宝页面源码中提取真实的 catId。
+
+### 📝 B2/B3 详细分析（2026-06-20）
+
+**现象**：`form-done.json` 中 `packaging: false`、`origin: false`，且提交时报"必填项未填"
+
+**可能原因**：
+1. 当前类目"汽车零部件>>全车检测服务"的表单结构和花茶类目不同
+2. 该默认类目的页面中标签文本不是"包装方式"和"产地"，而是其他名称
+3. DOM中不存在对应的 Ant Design / Fusion 选择器 trigger
+
+**需要的修复方向**：先解决 B1（类目正确了表单结构才对），B2/B3 可能随之解决。同时 page.evaluate 需要增强容错性。
+
+### 📝 B4 详细分析（2026-06-20）
+
+**现象**：`form-done.json` 中 `images: true`，但提交时报"1:1主图不能为空"
+
+**可能原因**：
+1. 代码设 `filled.images = true` 但实际没有图片文件可上传（product.images 为空）
+2. 或者上传了图片但页面不认（图片格式不对/上传失败但代码没检测到）
+
+**需要的修复方向**：
+1. 在 `uploadImagesViaIframe` 中增加上传成功的严格判断（等待成功的DOM变化后才算完成）
+2. 如果没有图片文件，应该在前端提示用户而不是静默跳过
